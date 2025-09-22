@@ -1,0 +1,1176 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8" />
+<title>Platformer - Porte + Minigiochi (Side-Scroll)</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  html,body {
+    margin:0; height:100%; width:100%;
+    background:#111; display:flex; align-items:center; justify-content:center;
+    font-family:monospace;
+    overflow:hidden;
+  }
+
+  /* Overlay a pieno schermo sopra il canvas */
+  #startScreen, #introVideo, #outroVideo, #pauseOverlay, #deathOverlay {
+    position:absolute; top:0; left:0; width:100%; height:100%;
+    display:flex; align-items:center; justify-content:center; flex-direction:column;
+    background:#111; color:white;
+    z-index:2000;
+  }
+  #startButton, .btn {
+    margin-top:20px; padding:10px 20px; font-size:18px; cursor:pointer; border-radius:6px; border:none; background:#ff5757; color:white;
+  }
+
+  /* FULLSCREEN canvas sotto agli overlay */
+  #game {
+    position: fixed; inset: 0;
+    width: 100vw; height: 100vh;
+    display: none;
+    image-rendering: pixelated;
+    background: transparent; box-shadow: none;
+    z-index: 0;
+  }
+
+  #hud {
+    position:fixed; left:12px; top:12px;
+    background:rgba(255,255,255,0.9);
+    padding:8px 10px; border-radius:8px;
+    display:none; z-index:1000;
+  }
+
+  /* Menu finale (vittoria) */
+  #endMenu {
+    position:absolute; top:0; left:0; width:100%; height:100%;
+    background:rgba(0,0,0,0.8); color:white;
+    display:none; flex-direction:column; justify-content:center; align-items:center;
+    z-index:2000;
+  }
+  #endMenu button { margin-top:20px; padding:10px 20px; font-size:18px; cursor:pointer; border-radius:6px; border:none; background:#4caf50; color:white; }
+
+  /* Pausa & morte */
+  #pauseOverlay { display:none; background:rgba(0,0,0,0.7); text-align:center; }
+  #deathOverlay { display:none; background:rgba(0,0,0,0.85); text-align:center; }
+
+  /* Achievements */
+  #achievements { position: fixed; top: 12px; right: 12px; display: flex; flex-direction: column; gap: 10px; z-index: 1999; pointer-events: none; }
+  .achievement { background: rgba(0,0,0,0.85); color: white; padding: 10px 12px; border-radius: 10px; box-shadow: 0 4px 16px rgba(0,0,0,0.4); min-width: 220px; font-size: 14px; transform: translateX(120%); animation: achSlide 3.6s ease forwards; }
+  .achievement b { display:block; margin-bottom:2px; }
+  @keyframes achSlide { 0%{opacity:0; transform:translateX(120%);} 10%{opacity:1; transform:translateX(0);} 80%{opacity:1; transform:translateX(0);} 100%{opacity:0; transform:translateX(120%);} }
+
+  /* === Minigame Overlay === */
+  #minigameOverlay {
+    position: absolute; inset: 0; z-index: 2500;
+    display: none; align-items: center; justify-content: center;
+    background: rgba(0,0,0,0.92); color: #fff;
+  }
+  .mini-card {
+    background: #1a1a1a; border: 1px solid #333; border-radius: 12px;
+    padding: 16px; width: min(92vw, 520px);
+    box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+  }
+  .mini-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
+  .mini-title { font-weight:700; font-size:20px; }
+  .mini-status { opacity:.9; font-size:14px; }
+
+  /* Tris UI */
+  #trisGrid { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-top:12px; }
+  .cell {
+    aspect-ratio: 1/1; background:#0f0f0f; border:1px solid #333; border-radius:10px;
+    display:flex; align-items:center; justify-content:center;
+    font-size:48px; cursor:pointer; user-select:none;
+    transition: transform .06s;
+  }
+  .cell:hover{ transform: scale(1.02); }
+  .cell.disabled{ pointer-events:none; opacity:.5; }
+
+  /* Snake + canvas generico */
+  #snakeWrap, #canvasWrap { display:none; margin-top:12px; display:flex; flex-direction:column; gap:8px; align-items:center; }
+  #snakeCanvas, #miniCanvas { background:#0b0b0b; border:1px solid #333; border-radius:10px; width: min(92vw, 420px); height: min(92vw, 420px); image-rendering: pixelated; }
+
+  .pill { display:inline-block; background:#2b2b2b; border:1px solid #444; padding:4px 8px; border-radius:999px; font-size:12px; }
+
+  /* Bottone X */
+  .mini-close{
+    width:28px; height:28px; border-radius:8px;
+    border:1px solid #444; background:#222; color:#fff;
+    cursor:pointer; font-size:18px; line-height:1;
+    display:flex; align-items:center; justify-content:center;
+  }
+  .mini-close:hover{ background:#2c2c2c; border-color:#555; }
+  .mini-close:active{ transform: translateY(1px); }
+</style>
+</head>
+<body>
+
+<!-- Schermata iniziale -->
+<div id="startScreen">
+  <h1>Platformer - Porte dinamiche (Side-Scroll)</h1>
+  <button id="startButton">Start</button>
+</div>
+
+<!-- Video introduttivo -->
+<video id="introVideo" width="960" height="540" style="display:none;">
+  <source src="totoro.mp4" type="video/mp4">
+</video>
+
+<!-- Video finale -->
+<video id="outroVideo" width="960" height="540" style="display:none;" controls>
+  <source src="finale.mp4" type="video/mp4">
+</video>
+
+<!-- Canvas di gioco -->
+<canvas id="game" width="960" height="540"></canvas>
+<div id="hud">Livello: 1 · Monete: 0 · ❤❤❤</div>
+
+<!-- Menu finale (vittoria) -->
+<div id="endMenu">
+  <h2 id="endText">Hai completato il gioco!</h2>
+  <p id="stats"></p>
+  <button id="continueBtn">Continua la storia</button>
+</div>
+
+<!-- Pausa -->
+<div id="pauseOverlay">
+  <h2>Gioco in pausa</h2>
+  <p>Premi <b>ESC</b> per riprendere</p>
+</div>
+
+<!-- Morte / Retry -->
+<div id="deathOverlay">
+  <h2>Sei stato sconfitto!</h2>
+  <p id="deathStats"></p>
+  <button class="btn" id="retryBtn">Riprova dal livello</button>
+</div>
+
+<!-- === Minigame Overlay === -->
+<div id="minigameOverlay">
+  <div class="mini-card">
+    <div class="mini-header">
+      <div class="mini-title" id="miniTitle">Minigioco</div>
+      <div style="display:flex; align-items:center; gap:8px;">
+        <div class="pill" id="miniHint">Vinci per chiudere la porta</div>
+        <button id="miniClose" class="mini-close" aria-label="Chiudi">×</button>
+      </div>
+    </div>
+    <div class="mini-status" id="miniStatus">Caricamento…</div>
+
+    <!-- Tris -->
+    <div id="trisWrap" style="display:none;">
+      <div id="trisGrid"></div>
+    </div>
+
+    <!-- Snake -->
+    <div id="snakeWrap">
+      <canvas id="snakeCanvas" width="420" height="420"></canvas>
+      <div class="mini-status" id="snakeHUD">Mele: 0 / 5</div>
+    </div>
+
+    <!-- Canvas generico per Wire/Reaction/Aim -->
+    <div id="canvasWrap">
+      <canvas id="miniCanvas" width="420" height="420"></canvas>
+      <div class="mini-status" id="canvasHUD"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ---------- INIZIO SCHERMATA, VIDEO & FALLBACK ---------- */
+const startScreen=document.getElementById('startScreen');
+const startButton=document.getElementById('startButton');
+const introVideo=document.getElementById('introVideo');
+const outroVideo=document.getElementById('outroVideo');
+const canvas=document.getElementById('game');
+const hud=document.getElementById('hud');
+const ctx=canvas.getContext('2d');
+ctx.imageSmoothingEnabled=false;
+
+/* Overlays */
+const pauseOverlay = document.getElementById('pauseOverlay');
+const deathOverlay = document.getElementById('deathOverlay');
+const retryBtn = document.getElementById('retryBtn');
+
+/* --- SPRITES --- */
+const idleImg = new Image(); idleImg.src = 'player_idle.png';
+const RUN_FRAMES = 10; const runFrames = [];
+for (let i=0; i<RUN_FRAMES; i++) { const im = new Image(); im.src = `player_run_${String(i).padStart(2,'0')}.png`; runFrames.push(im); }
+const JUMP_FRAMES = 5; const jumpFrames = [];
+for (let i=0; i<JUMP_FRAMES; i++) { const im = new Image(); im.src = `player_jump_${String(i).padStart(2,'0')}.png`; jumpFrames.push(im); }
+const TURN_FRAMES = 6; const turnFrames = [];
+for (let i=0; i<TURN_FRAMES; i++) { const im = new Image(); im.src = `player_turn_${String(i).padStart(2,'0')}.png`; turnFrames.push(im); }
+const DOOR_FRAMES = 6, DOOR_FPS = 8; const doorFrames = [];
+for (let i = 0; i < DOOR_FRAMES; i++) { const im = new Image(); im.src = `door_${String(i).padStart(2,'0')}.png`; doorFrames.push(im); }
+const coinImg = new Image(); coinImg.src = 'coin.png';
+
+/* === PRELOAD SPRITES === */
+const allSprites = [idleImg, ...runFrames, ...jumpFrames, ...turnFrames, ...doorFrames, coinImg];
+let spritesReady = false;
+function preloadSprites(){
+  return Promise.all(allSprites.map(img => new Promise(res => {
+    if (img.complete && img.naturalWidth) return res();
+    img.onload = res; img.onerror = res;
+  }))).then(()=>{ spritesReady = true; });
+}
+const preloadPromise = preloadSprites();
+
+/* FPS animazioni (ritoccati) */
+const IDLE_FPS = 2, RUN_FPS = 14, JUMP_FPS = 14, TURN_FPS = 12;
+const AIR_ANIM_DELAY = 0.03, RUN_THRESHOLD = 1;
+
+/* ---------- ACHIEVEMENTS UI ---------- */
+const achContainer=document.createElement('div');
+achContainer.id='achievements';
+document.body.appendChild(achContainer);
+function showAchievement(title, subtitle){ const el=document.createElement('div'); el.className='achievement'; el.innerHTML=`<b>🏆 ${title}</b><span>${subtitle}</span>`; achContainer.appendChild(el); setTimeout(()=>{ el.remove(); }, 3600); }
+let achFirstCoin=false, achAllCoinsBeforeL4=false;
+
+/* ---------- CONFIG ---------- */
+const TILE=48, COLS=60, ROWS=10;   // livelli lunghi
+const WORLD_W=COLS*TILE, WORLD_H=ROWS*TILE;
+const MOVE_SPEED=240, GRAVITY=2000, MAX_FALL=1200, JUMP_VELOCITY=700;
+
+/* Danni / HP */
+const MAX_HP = 3;
+const INVULN_TIME = 1.2;
+const HITLOCK_TIME = 0.25;
+const KNOCK_VX = 320;
+const KNOCK_VY = 650;
+
+/* Spuntoni */
+const SPIKE_H = 24;
+
+/* ---------- LEVELS (base + porte minigame mappate) ---------- */
+function makeEmptyMap(){const m=[];for(let r=0;r<ROWS;r++)m.push(Array(COLS).fill(0));return m;}
+function cloneMap(m){return m.map(row=>row.slice());}
+const levels=[];
+
+/* LIVELLO 1 (index 0) → Wire Loop */
+let m0=makeEmptyMap(); m0[9]=Array(COLS).fill(1);
+for(let x=4;x<=7;x++) m0[6][x]=1;
+for(let x=11;x<=13;x++) m0[5][x]=1;
+levels.push({
+  bg:'background_level0.png', map:cloneMap(m0),
+  coins:[{c:5,r:5},{c:12,r:4},{c:2,r:8}],
+  doors:[{x:(COLS-2)*TILE+6, y:9*TILE-48, w:36, h:48, target:1}],
+  miniDoors:[{x: 6*TILE+10, y:9*TILE-40, w:28, h:40, game:'wire'}],
+  hazards:[{type:'spikeUp', c:9, r:9, tiles:2}, {type:'spikeUp', c:2, r:9, tiles:1}],
+  start:{x:80,y:0}
+});
+
+/* LIVELLO 2 (index 1) → Snake */
+let m1=makeEmptyMap(); m1[9]=Array(COLS).fill(1);
+for(let x=2;x<=4;x++) m1[7][x]=1;
+for(let x=14;x<=17;x++) m1[6][x]=1;
+levels.push({
+  bg:'background_level1.png', map:cloneMap(m1),
+  coins:[{c:3,r:6},{c:15,r:5},{c:10,r:8}],
+  doors:[
+    {x:1*TILE+6, y:9*TILE-48,  w:36, h:48, target:2},
+    {x:(COLS-2)*TILE+6, y:9*TILE-48, w:36, h:48, target:0}
+  ],
+  miniDoors:[{x: 23*TILE+10, y:9*TILE-40, w:28, h:40, game:'snake'}],
+  hazards:[{type:'spikeUp', c:6, r:9, tiles:3}],
+  start:{x:80,y:0}
+});
+
+/* LIVELLO 3 (index 2) → Reaction Test */
+let m2=makeEmptyMap(); m2[9]=Array(COLS).fill(1);
+for(let x=7;x<=9;x++) m2[6][x]=1;
+for(let x=1;x<=3;x++) m2[5][x]=1;
+levels.push({
+  bg:'background_level2.png', map:cloneMap(m2),
+  coins:[{c:8,r:5},{c:2,r:4},{c:11,r:8}],
+  doors:[
+    {x:1*TILE+6, y:9*TILE-48,  w:36, h:48, target:1},
+    {x:(COLS-2)*TILE+6, y:9*TILE-48, w:36, h:48, target:3}
+  ],
+  miniDoors:[{x: 41*TILE+12, y:9*TILE-40, w:28, h:40, game:'react'}],
+  hazards:[{type:'spikeUp', c:11, r:9, tiles:2}],
+  start:{x:80,y:0}
+});
+
+/* LIVELLO 4 (index 3) → Aim Trainer */
+let m3=makeEmptyMap(); m3[9]=Array(COLS).fill(1);
+for(let x=5;x<=7;x++) m3[6][x]=1;
+for(let x=12;x<=14;x++) m3[5][x]=1;
+levels.push({
+  bg:'background_level3.png', map:cloneMap(m3),
+  coins:[{c:6,r:5},{c:13,r:4},{c:18,r:8}],
+  doors:[
+    {x:(COLS-2)*TILE+6, y:9*TILE-48, w:36, h:48, target:'END'},
+    {x:1*TILE+6, y:9*TILE-48,  w:36, h:48, target:2}
+  ],
+  miniDoors:[{x: 17*TILE+10, y:9*TILE-40, w:28, h:40, game:'aim'}],
+  hazards:[{type:'spikeUp', c:8, r:9, tiles:4}],
+  start:{x:80,y:0}
+});
+
+/* ---------- STATE ---------- */
+let currentLevel=0;
+let bgImg=new Image();
+let map=levels[currentLevel].map;
+const collected=new Set(); let score=0, coins=[], doors=[];
+let hazards=[]; // rettangoli collisionabili
+let mgDoors=[]; let mgDoorsClosed=[];
+const clearedMini = new Set();
+
+let nextSpawn=null;
+let gameEnded=false;
+let paused=false;
+let startTime=null;
+let coinAnimT=0;
+let doorAnimT=0;
+let airTime=0;
+let enteringDoor = { active:false, door:null };
+let shakeTime=0, shakeAmp=0;
+
+/* --- Frame cache per animazioni --- */
+const lastFrameByAnim = { idle:null, run:null, jump:null, turn:null };
+
+/* ---------- CAMERA ---------- */
+let cameraX = 0;
+function clampCamera(x){ return Math.max(0, Math.min(Math.max(0, WORLD_W - canvas.width), x)); }
+function updateCamera(){ const target = player.x + player.w/2 - canvas.width/2; cameraX = clampCamera(Math.floor(target)); }
+
+/* ---------- GENERAZIONE SEMPLICE A CHUNK ---------- */
+const CHUNK_W = 6;
+let generatedChunks = new Set();
+function rngf(seed){ let t = seed + 0x6D2B79F5; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }
+function generateChunk(ci){
+  if (generatedChunks.has(ci)) return; generatedChunks.add(ci);
+  const startC = ci * CHUNK_W;
+  if (startC < 6 || startC > COLS - 8) return;
+  const seedBase = currentLevel*10000 + ci*101;
+  const len1 = 2 + Math.floor(rngf(seedBase+1)*3);
+  const row1 = 5 + Math.floor(rngf(seedBase+2)*3);
+  const col1 = startC + 1 + Math.floor(rngf(seedBase+3)*Math.max(1, CHUNK_W - len1 - 2));
+  for(let c=col1;c<col1+len1;c++){ if (map[row1] && map[row1][c]===0) map[row1][c]=1; }
+  if (rngf(seedBase+4) < 0.7){
+    const mid = col1 + Math.floor(len1/2); const id = `L${currentLevel}_G${ci}_C0`;
+    if(!collected.has(id)) coins.push({id, x: mid*TILE + (TILE-24)/2, y: (row1-1)*TILE + (TILE-24)/2, w:24, h:24 });
+  }
+  if (rngf(seedBase+5) < 0.5){
+    const len2 = 2 + Math.floor(rngf(seedBase+6)*3);
+    const row2 = Math.min(8, row1 + 1 + Math.floor(rngf(seedBase+7)*2));
+    const col2 = startC + 1 + Math.floor(rngf(seedBase+8)*Math.max(1, CHUNK_W - len2 - 2));
+    for(let c=col2;c<col2+len2;c++){ if (map[row2] && map[row2][c]===0) map[row2][c]=1; }
+    if (rngf(seedBase+9) < 0.4){
+      const mid2 = col2 + Math.floor(len2/2); const id2 = `L${currentLevel}_G${ci}_C1`;
+      if(!collected.has(id2)) coins.push({id:id2, x: mid2*TILE + (TILE-24)/2, y: (row2-1)*TILE + (TILE-24)/2, w:24, h:24 });
+    }
+  }
+  if (rngf(seedBase+10) < 0.45){
+    const tiles = 1 + Math.floor(rngf(seedBase+11)*3);
+    const hc = startC + 1 + Math.floor(rngf(seedBase+12)*Math.max(1, CHUNK_W - tiles - 2));
+    hazards.push({type:'spikeUp', x: hc*TILE, y: 9*TILE - SPIKE_H, w: tiles*TILE, h: SPIKE_H});
+  }
+}
+function ensureGeneratedForView(c0, c1){ const s = Math.floor(Math.max(0, c0)/CHUNK_W); const e = Math.floor(Math.min(COLS-4, c1)/CHUNK_W); for(let ci=s; ci<=e; ci++) generateChunk(ci); }
+
+/* ---------- PLAYER ---------- */
+const player={w:48,h:64,x:80,y:0, vx:0,vy:0,onGround:false,jumpsLeft:2, hp:MAX_HP, invuln:0, hitLock:0};
+player.anim='idle'; player.frame=0; player.frameTime=0; player.facing=1;
+
+let trail=[]; let doubleJumpTrailCooldown = 0;
+
+/* ---------- INPUT ---------- */
+const keys={left:false,right:false,up:false,down:false};
+window.addEventListener('keydown',e=>{
+  if (inMiniGame) { handleMinigameKeyDown(e); return; }
+  if(e.code==='KeyA') keys.left=true;
+  if(e.code==='KeyD') keys.right=true;
+  if(e.code==='KeyW'){
+    // Porte classiche (uscita/ingresso livelli)
+    if (enteringDoor && enteringDoor.active) return;
+    for(const d of doors){
+      if(AABB(player.x,player.y,player.w,player.h,d.x,d.y-2,d.w,d.h+4)){
+        enteringDoor = { active:true, door:d };
+        player.anim = 'turn'; player.frame = 0; player.frameTime = 0;
+        const doorCenter = d.x + d.w/2; const playerCenter = player.x + player.w/2;
+        player.facing = (doorCenter >= playerCenter) ? 1 : -1;
+        return;
+      }
+    }
+
+    // Porte minigioco (ENTRI SOLO SE SOPRA E PREMI W)
+    for (const g of mgDoors){
+      if (!clearedMini.has(g.key) && AABB(player.x,player.y,player.w,player.h, g.x,g.y,g.w,g.h)){
+        startMinigame(g);
+        return;
+      }
+    }
+
+    // Altrimenti: Salto / Doppio salto
+    if(player.jumpsLeft>0){
+      player.vy=-JUMP_VELOCITY; player.onGround=false; player.jumpsLeft--;
+      if(player.jumpsLeft===0){
+        doubleJumpTrailCooldown = 0;
+        for (let i = 0; i < 8; i++) {
+          const ox = (Math.random() * 12 - 6);
+          const oy = (Math.random() * 12 - 6);
+          trail.push({ x: player.x + player.w/2 + ox, y: player.y + player.h/2 + oy, s: 2, life: 16, delay: i });
+        }
+      }
+    }
+    keys.up=true;
+  }
+  if(e.code==='KeyS') keys.down=true;
+  if(e.code==='Escape'){
+    if (inMiniGame) return; // pausa solo fuori dai minigiochi
+    togglePause();
+  }
+});
+window.addEventListener('keyup',e=>{
+  if (inMiniGame) { handleMinigameKeyUp(e); return; }
+  if(e.code==='KeyA') keys.left=false;
+  if(e.code==='KeyD') keys.right=false;
+  if(e.code==='KeyW') keys.up=false;
+  if(e.code==='KeyS') keys.down=false;
+});
+
+retryBtn.onclick = () => { deathOverlay.style.display='none'; paused=false; respawnLevel(); };
+
+/* ---------- HELPERS ---------- */
+function tileAt(c,r){if(r<0||r>=ROWS||c<0||c>=COLS)return 0;return map[r][c];}
+function AABB(ax,ay,aw,ah,bx,by,bw,bh){return ax<bx+bw&&ax+aw>bx&&ay<by+bh&&ay+ah>by;}
+function spawnCoinsForLevel(i){
+  const lvl=levels[i],arr=[];
+  for(let k=0;k<lvl.coins.length;k++){
+    const c=lvl.coins[k],id=`L${i}_C${k}`;
+    if(!collected.has(id)) arr.push({id,x:c.c*TILE+(TILE-24)/2,y:c.r*TILE+(TILE-24)/2,w:24,h:24});
+  }
+  return arr;
+}
+function hazardsForLevel(i){
+  const out=[]; const list = levels[i].hazards || [];
+  for(const h of list){
+    if(h.type==='spikeUp'){
+      const x = h.c * TILE; const w = (h.tiles||1)*TILE; const y = h.r * TILE - SPIKE_H; const hh = SPIKE_H;
+      out.push({type:'spikeUp', x, y, w, h:hh});
+    }
+  }
+  return out;
+}
+
+/* porte di ingresso coerente */
+function findDoorPointingTo(levelIndex, targetIndex){
+  const arr = levels[levelIndex].doors || [];
+  return arr.find(d => d.target === targetIndex) || null;
+}
+function spawnBesideDoor(door){
+  const margin = 4;
+  let sx = door.x + door.w + margin;
+  if (sx + player.w > WORLD_W) sx = door.x - player.w - margin;
+  const sy = door.y - player.h;
+  return { x: Math.max(0, Math.min(WORLD_W - player.w, sx)), y: Math.max(0, sy) };
+}
+
+async function startGame(){
+  await preloadPromise;
+  introVideo.pause?.();
+  introVideo.style.display='none';
+  startScreen.style.display='none';
+  canvas.style.display='block';
+  hud.style.display='block';
+  loadLevel(0);
+  requestAnimationFrame(update);
+}
+startButton.onclick = () => {
+  startScreen.style.display='none';
+  introVideo.style.display='block';
+  introVideo.play?.().catch(startGame);
+};
+introVideo.onended = startGame;
+introVideo.onerror = startGame;
+introVideo.onabort = startGame;
+
+function loadLevel(i){
+  if(startTime===null) startTime=performance.now();
+  currentLevel=i; map=levels[i].map; bgImg.src=levels[i].bg;
+  coins=spawnCoinsForLevel(i);
+  doors=levels[i].doors.map(d=>({...d}));
+  hazards=hazardsForLevel(i);
+  generatedChunks = new Set();
+
+  // mini-porte per livello (attive/chiuse)
+  mgDoors = (levels[i].miniDoors||[]).map((d,idx)=>({ ...d, key:`MG_L${i}_${idx}` }));
+  mgDoorsClosed = [];
+  (levels[i].miniDoors||[]).forEach((d,idx)=>{ const key=`MG_L${i}_${idx}`; if(clearedMini.has(key)) mgDoorsClosed.push({...d, key}); });
+  mgDoors = mgDoors.filter(d=>!clearedMini.has(d.key));
+
+  if(nextSpawn){
+    Object.assign(player,{x:nextSpawn.x, y:nextSpawn.y, vx:0, vy:0, onGround:false, jumpsLeft:2}); nextSpawn=null;
+  } else {
+    Object.assign(player,levels[i].start,{vx:0,vy:0,onGround:false,jumpsLeft:2});
+  }
+
+  cameraX = clampCamera(player.x + player.w/2 - canvas.width/2);
+  updateHUD();
+}
+
+function respawnLevel(){
+  Object.assign(player,levels[currentLevel].start,{vx:0,vy:0,onGround:false,jumpsLeft:2, hp:MAX_HP, invuln:0.6, hitLock:0});
+  cameraX = clampCamera(player.x + player.w/2 - canvas.width/2);
+  paused=false; gameEnded=false; deathOverlay.style.display='none';
+  updateHUD();
+}
+
+/* ---------- COLLISIONS ---------- */
+function resolveHorizontal(dt){
+  let nx=player.x+player.vx*dt;
+  const top=Math.floor(player.y/TILE), bottom=Math.floor((player.y+player.h-1)/TILE);
+  if(player.vx>0){
+    const col=Math.floor((nx+player.w-1)/TILE);
+    for(let r=top;r<=bottom;r++){if(tileAt(col,r)===1){player.x=col*TILE-player.w-0.001;player.vx=0; return;}}
+    player.x=nx;
+  }else if(player.vx<0){
+    const col=Math.floor(nx/TILE);
+    for(let r=top;r<=bottom;r++){if(tileAt(col,r)===1){player.x=(col+1)*TILE+0.001;player.vx=0; return;}}
+    player.x=nx;
+  }
+  if(player.x<0) player.x=0; if(player.x+player.w>WORLD_W) player.x=WORLD_W-player.w;
+}
+function resolveVertical(dt){
+  let ny=player.y+player.vy*dt;
+  const left=Math.floor(player.x/TILE), right=Math.floor((player.x+player.w-1)/TILE);
+  if(player.vy>0){
+    const row=Math.floor((ny+player.h-1)/TILE);
+    for(let c=left;c<=right;c++){
+      if(tileAt(c,row)===1){ player.y=row*TILE-player.h; player.vy=0; player.onGround=true; return; }
+    }
+    player.y=ny; player.onGround=false;
+  }else if(player.vy<0){
+    const row=Math.floor(ny/TILE);
+    for(let c=left;c<=right;c++){
+      if(tileAt(c,row)===1){ player.y=(row+1)*TILE+0.001; player.vy=0; return; }
+    }
+    player.y=ny;
+  }
+  if(player.y<0) player.y=0;
+}
+
+/* ---------- DAMAGE / HAZARDS ---------- */
+function checkHazardsAndDamage(){
+  if(player.invuln>0) return;
+  for(const hz of hazards){
+    if(AABB(player.x,player.y,player.w,player.h, hz.x, hz.y, hz.w, hz.h)){
+      const px = player.x + player.w/2; const hx = hz.x + hz.w/2; const dir = (px>=hx)? 1 : -1;
+      applyDamage(dir);
+      return;
+    }
+  }
+}
+function applyDamage(dir){
+  player.hp = Math.max(0, player.hp - 1);
+  player.invuln = INVULN_TIME; player.hitLock = HITLOCK_TIME;
+  player.vy = -KNOCK_VY; player.vx = dir * KNOCK_VX;
+  shakeTime = 0.25; shakeAmp = 6;
+  showAchievement('Ahi!', 'Colpito dagli spuntoni');
+  updateHUD();
+  if(player.hp<=0){ onPlayerDeath(); }
+}
+
+function onPlayerDeath(){
+  paused=true; deathOverlay.style.display='flex';
+  const elapsed=Math.floor((performance.now()-startTime)/1000);
+  document.getElementById('deathStats').innerHTML=`Monete: ${score} · Tempo: ${elapsed}s`;
+}
+
+/* ---------- GAME LOOP ---------- */
+let lastTime=performance.now();
+function update(now){
+  const dtFull = (now - lastTime) / 1000; const dt = Math.min(0.033, Math.max(0, dtFull));
+  lastTime = now;
+
+  if(paused){ draw(); requestAnimationFrame(update); return; }
+
+  coinAnimT += dt; doorAnimT += dt;
+  if(player.invuln>0) player.invuln = Math.max(0, player.invuln - dt);
+  if(player.hitLock>0) player.hitLock = Math.max(0, player.hitLock - dt);
+
+  // --- Entrata porta classica (anim turn + transizione) ---
+  if (enteringDoor && enteringDoor.active) {
+    player.vx = 0; player.vy = 0; player.anim = 'turn';
+    player.frameTime += dt;
+    if (player.frameTime >= 1 / TURN_FPS) {
+      player.frameTime -= 1 / TURN_FPS; player.frame++;
+      if (player.frame >= turnFrames.length) {
+        const fromLevel = currentLevel;
+        const d = enteringDoor.door; enteringDoor.active = false;
+        if (d.target === 'END') { endGame(); }
+        else {
+          const entryDoor = findDoorPointingTo(d.target, fromLevel);
+          if (entryDoor) nextSpawn = spawnBesideDoor(entryDoor); else nextSpawn = {...levels[d.target].start};
+          loadLevel(d.target);
+        }
+        player.anim = 'idle'; player.frame = 0; player.frameTime = 0;
+      }
+    }
+    draw(); if (!gameEnded) requestAnimationFrame(update); return;
+  }
+
+  // Input orizzontale + gravità
+  if(player.hitLock<=0){
+    if(keys.left&&!keys.right) player.vx=-MOVE_SPEED;
+    else if(keys.right&&!keys.left) player.vx=MOVE_SPEED;
+    else player.vx=0;
+  }
+  player.vy += GRAVITY * dt; if (player.vy > MAX_FALL) player.vy = MAX_FALL;
+
+  resolveHorizontal(dt);
+  resolveVertical(dt);
+  if(player.onGround) player.jumpsLeft=2;
+
+  // Facing
+  if (player.vx > 0) player.facing = 1; else if (player.vx < 0) player.facing = -1;
+
+  // Danni
+  checkHazardsAndDamage();
+
+  // Stato animazioni
+  if (player.onGround) airTime = 0; else airTime += dt;
+  const prevAnim = player.anim;
+  if (airTime > AIR_ANIM_DELAY) player.anim = 'jump';
+  else if (Math.abs(player.vx) < RUN_THRESHOLD) player.anim = 'idle';
+  else player.anim = 'run';
+  if (player.anim !== prevAnim) { player.frame = 0; player.frameTime = 0; }
+
+  const fps = (player.anim === 'idle') ? IDLE_FPS : (player.anim === 'run' ? RUN_FPS : JUMP_FPS);
+  const maxFrames = (player.anim === 'idle') ? 1 : (player.anim === 'run' ? runFrames.length : jumpFrames.length);
+  player.frameTime += dt; if (player.frameTime >= 1 / fps) { player.frameTime -= 1 / fps; player.frame = (player.frame + 1) % maxFrames; }
+
+  /* --- SCIA: decadimento e rimozione --- */
+  for (let i = trail.length - 1; i >= 0; i--) {
+    const t = trail[i];
+    if (t.delay > 0) { t.delay--; continue; }
+    t.life--;
+    if (t.life <= 0) trail.splice(i,1);
+  }
+
+  // Raccolta monete
+  for(let i=coins.length-1;i>=0;i--){
+    const c=coins[i];
+    if(AABB(player.x,player.y,player.w,player.h,c.x,c.y,c.w,c.h)){
+      collected.add(c.id); coins.splice(i,1); score++; updateHUD();
+      if(!achFirstCoin && score===1){ showAchievement('Prima moneta!', 'Hai raccolto la tua prima moneta'); achFirstCoin=true; }
+    }
+  }
+
+  // (Niente auto-ingresso minigiochi qui!)
+
+  // Generazione dinamica
+  const visStart = Math.floor(cameraX / TILE) - 4;
+  const visEnd   = Math.ceil((cameraX + canvas.width) / TILE) + 6;
+  ensureGeneratedForView(visStart, visEnd);
+
+  // Camera
+  updateCamera();
+
+  // Camera shake decay
+  if(shakeTime>0){ shakeTime -= dt; if(shakeTime<0) shakeTime=0; }
+
+  draw();
+  if(!gameEnded) requestAnimationFrame(update);
+}
+
+/* ---------- DRAW ---------- */
+function draw(){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+
+  // Camera shake (screen-space)
+  ctx.save();
+  if(shakeTime>0){
+    const k = (shakeTime);
+    const dx = (Math.random()*2-1)*shakeAmp*k;
+    const dy = (Math.random()*2-1)*shakeAmp*k;
+    ctx.translate(dx,dy);
+  }
+
+  // Sfondo livello
+  if (bgImg.complete) { ctx.drawImage(bgImg, 0, 0, canvas.width, canvas.height); }
+  else { ctx.fillStyle = '#111'; ctx.fillRect(0, 0, canvas.width, canvas.height); }
+
+  // WORLD-SPACE
+  ctx.save();
+  ctx.translate(-Math.floor(cameraX), 0);
+
+  // Tiles (culling)
+  ctx.fillStyle='#6b4f2b';
+  const cStart = Math.max(0, Math.floor(cameraX / TILE) - 1);
+  const cEnd   = Math.min(COLS-1, Math.ceil((cameraX + canvas.width) / TILE) + 1);
+  for(let r=0;r<ROWS;r++){
+    for(let c=cStart;c<=cEnd;c++){
+      if(map[r][c]===1){
+        ctx.fillRect(c*TILE, canvas.height - WORLD_H + r*TILE, TILE, TILE);
+      }
+    }
+  }
+
+  // Monete
+  for (const c of coins) {
+    const yOff = Math.floor(Math.sin(coinAnimT*2 + (c.x + c.y)*0.05) * 2);
+    const dx = Math.floor(c.x), dy = Math.floor(canvas.height - WORLD_H + c.y + yOff);
+    const dw = Math.floor(c.w), dh = Math.floor(c.h);
+    if (coinImg.complete && coinImg.width && coinImg.height) ctx.drawImage(coinImg, dx, dy, dw, dh);
+    else { ctx.fillStyle = 'gold'; ctx.fillRect(dx, dy, dw, dh); }
+  }
+
+  // Porte classiche (animate)
+  for (const d of doors) {
+    const dx = d.x, dy = canvas.height - WORLD_H + d.y, dw = d.w, dh = d.h;
+    const idx = doorFrames.length ? Math.floor(doorAnimT * DOOR_FPS) % doorFrames.length : 0;
+    const df = doorFrames[idx];
+    if (df && df.complete && df.width && df.height) ctx.drawImage(df, dx, dy, dw, dh);
+    else { ctx.fillStyle = 'purple'; ctx.fillRect(dx, dy, dw, dh); }
+  }
+
+  // Porte-minigioco attive (turchese) e chiuse (grigie)
+  for (const g of mgDoors) {
+    ctx.fillStyle = '#19bfbf';
+    ctx.fillRect(g.x, canvas.height - WORLD_H + g.y, g.w, g.h);
+  }
+  for (const g of mgDoorsClosed) {
+    ctx.fillStyle = '#555';
+    ctx.fillRect(g.x, canvas.height - WORLD_H + g.y, g.w, g.h);
+    ctx.strokeStyle = '#999'; ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(g.x, canvas.height - WORLD_H + g.y);
+    ctx.lineTo(g.x+g.w, canvas.height - WORLD_H + g.y + g.h);
+    ctx.moveTo(g.x+g.w, canvas.height - WORLD_H + g.y);
+    ctx.lineTo(g.x, canvas.height - WORLD_H + g.y + g.h);
+    ctx.stroke();
+  }
+
+  // Spuntoni
+  for(const hz of hazards){
+    const baseY = canvas.height - WORLD_H + hz.y + hz.h;
+    const teeth = Math.max(1, Math.floor(hz.w / TILE));
+    const toothW = hz.w / teeth;
+    for(let i=0;i<teeth;i++){
+      const x0 = hz.x + i*toothW; const x1 = x0 + toothW/2; const x2 = x0 + toothW;
+      const y0 = baseY; const yTip = baseY - hz.h;
+      ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x2, y0); ctx.lineTo(x1, yTip); ctx.closePath();
+      ctx.fillStyle = '#c23'; ctx.fill();
+    }
+  }
+
+  // Scia
+  ctx.fillStyle='white';
+  for (const t of trail) {
+    if (t.delay > 0) continue;
+    ctx.fillRect(
+      Math.floor(t.x - (t.s||2)/2),
+      Math.floor(canvas.height - WORLD_H + t.y - (t.s||2)/2),
+      Math.floor((t.s||2)),
+      Math.floor((t.s||2))
+    );
+  }
+
+  // --- Player con blink + frame cache ---
+  const blinking = (player.invuln>0) && ((Math.floor(player.invuln*20) % 2)===0);
+  if(!blinking){
+    let img = null;
+    if (player.anim === 'idle') img = idleImg;
+    else if (player.anim === 'run') img = runFrames[player.frame] || null;
+    else if (player.anim === 'jump') img = jumpFrames[player.frame] || null;
+    else if (player.anim === 'turn') img = turnFrames[player.frame] || (turnFrames.length ? turnFrames[turnFrames.length-1] : null);
+
+    const imgReady = img && img.complete && img.width && img.height;
+    const useImg = imgReady ? img : lastFrameByAnim[player.anim];
+
+    if (useImg){
+      const dw = Math.floor(player.w), dh = Math.floor(player.h);
+      const dx = Math.floor(player.x), dy = Math.floor(canvas.height - WORLD_H + player.y);
+      if (player.facing === 1) ctx.drawImage(useImg, dx, dy, dw, dh);
+      else { ctx.save(); ctx.scale(-1,1); ctx.drawImage(useImg, -(dx + dw), dy, dw, dh); ctx.restore(); }
+      if (imgReady) lastFrameByAnim[player.anim] = img;
+    } else {
+      ctx.fillStyle='red';
+      ctx.fillRect(Math.floor(player.x), Math.floor(canvas.height - WORLD_H + player.y), Math.floor(player.w), Math.floor(player.h));
+    }
+  }
+
+  ctx.restore(); // world
+  ctx.restore(); // shake
+}
+
+function updateHUD(){
+  const hearts = '❤'.repeat(player.hp) + '·'.repeat(MAX_HP - player.hp);
+  hud.textContent = `Livello: ${currentLevel+1} · Monete: ${score} · ${hearts}`;
+}
+
+/* ---------- FINE (vittoria) ---------- */
+function endGame(){
+  gameEnded=true;
+  const totalTime=Math.floor((performance.now()-startTime)/1000);
+  if(!achAllCoinsBeforeL4){
+    const totalCoins = levels.reduce((s,l)=> s + l.coins.length, 0);
+    if(collected.size >= totalCoins){ showAchievement('Collezionista!', 'Hai raccolto tutte le monete!'); achAllCoinsBeforeL4 = true; }
+  }
+  document.getElementById("endMenu").style.display="flex";
+  document.getElementById("stats").innerHTML=`Monete raccolte: ${score}<br>Tempo impiegato: ${totalTime}s`;
+}
+
+/* ---------- PULSANTI FINE ---------- */
+document.getElementById("continueBtn").onclick=()=>{ document.getElementById("endMenu").style.display="none"; canvas.style.display="none"; hud.style.display="none"; outroVideo.style.display="block"; outroVideo.play(); };
+
+/* ---------- PAUSA ---------- */
+function togglePause(){ if(gameEnded) return; paused = !paused; pauseOverlay.style.display = paused ? 'flex' : 'none'; }
+
+/* =========================================================
+   ===================  MINIGIOCHI  ========================
+   ========================================================= */
+const miniOverlay = document.getElementById('minigameOverlay');
+const miniTitle = document.getElementById('miniTitle');
+const miniStatus = document.getElementById('miniStatus');
+const miniHint  = document.getElementById('miniHint');
+const miniClose = document.getElementById('miniClose');
+const trisWrap = document.getElementById('trisWrap');
+const trisGrid = document.getElementById('trisGrid');
+const snakeWrap = document.getElementById('snakeWrap');
+const snakeCanvas = document.getElementById('snakeCanvas');
+const snakeHUD = document.getElementById('snakeHUD');
+const canvasWrap = document.getElementById('canvasWrap');
+const miniCanvas = document.getElementById('miniCanvas');
+const canvasHUD = document.getElementById('canvasHUD');
+
+let inMiniGame = false;
+let currentMiniDoor = null;
+let currentMiniId = null;
+
+/* Avvio minigioco */
+function startMinigame(door){
+  inMiniGame = true; paused = true;
+  currentMiniDoor = door; currentMiniId = door.game || 'wire';
+  miniOverlay.style.display = 'flex';
+  miniHint.textContent = 'Vinci per chiudere la porta • ESC per uscire';
+
+  // reset viste
+  trisWrap.style.display='none';
+  snakeWrap.style.display='none';
+  canvasWrap.style.display='none';
+
+  if (currentMiniId === 'snake') startSnake();
+  else if (currentMiniId === 'wire') startWireLoop();
+  else if (currentMiniId === 'react') startReaction();
+  else if (currentMiniId === 'aim') startAim();
+  else startWireLoop();
+}
+
+/* Vittoria minigioco */
+function winMinigame(){
+  showAchievement('Mini-eroe!', 'Porta del minigioco chiusa');
+  clearedMini.add(currentMiniDoor.key);
+  mgDoorsClosed.push(currentMiniDoor);
+  mgDoors = mgDoors.filter(d=>d.key !== currentMiniDoor.key);
+  stopAllMinigames();
+  miniOverlay.style.display = 'none';
+  inMiniGame = false; paused = false;
+}
+
+/* Uscita senza vittoria (X o ESC) */
+function exitMinigameNoWin(){
+  stopAllMinigames();
+  miniOverlay.style.display = 'none';
+  inMiniGame = false;
+  paused = false;
+}
+miniClose.addEventListener('click', exitMinigameNoWin);
+
+/* Uscita/stop (senza vittoria -> usato per restart interni) */
+function stopAllMinigames(){
+  stopSnake();
+  stopWireLoop();
+  stopReaction();
+  stopAim();
+  trisGrid.innerHTML = '';
+}
+
+/* ---------- TRIS (tenuto come esempio) ---------- */
+const LINES = [[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]];
+let ttt = { board: new Array(9).fill(null), player:'X', ai:'O', lock:false };
+function startTris(){ miniTitle.textContent = 'Tris'; miniStatus.textContent = 'Fai tris (giochi con X)'; trisWrap.style.display='block'; snakeWrap.style.display='none'; canvasWrap.style.display='none'; ttt.board.fill(null); ttt.lock=false; renderTris(); }
+function renderTris(){ trisGrid.innerHTML=''; ttt.board.forEach((mark,idx)=>{ const d=document.createElement('div'); d.className='cell'; d.textContent = mark ? mark : ''; d.onclick = ()=>{ if (ttt.lock || ttt.board[idx]) return; ttt.board[idx] = ttt.player; const r = tttResult(); if (r==='X'){ miniStatus.textContent='Hai vinto!'; setTimeout(()=>winMinigame(), 400); return; } if (r==='draw'){ miniStatus.textContent='Pareggio. Si ricomincia…'; setTimeout(startTris, 650); return; } ttt.lock = true; renderTris(); setTimeout(()=>{ tttAIMove(); ttt.lock=false; renderTris(); }, 250); }; trisGrid.appendChild(d); }); }
+function tttResult(){ for (const L of LINES){ const [a,b,c]=L; const v=ttt.board[a]; if (v && v===ttt.board[b] && v===ttt.board[c]) return v; } if (ttt.board.every(x=>x)) return 'draw'; return null; }
+function tttFindWin(forMark){ for(let i=0;i<9;i++){ if(!ttt.board[i]){ ttt.board[i]=forMark; const r=tttResult(); ttt.board[i]=null; if (r===forMark) return i; } } return -1; }
+function tttAIMove(){ let idx = tttFindWin(ttt.ai); if (idx<0) idx = tttFindWin(ttt.player); if (idx<0 && !ttt.board[4]) idx = 4; if (idx<0){ const av = ttt.board.map((v,i)=>v?null:i).filter(v=>v!==null); idx = av[Math.floor(Math.random()*av.length)]; } ttt.board[idx]=ttt.ai; const r=tttResult(); if (r==='O'){ miniStatus.textContent='Hai perso. Riprova…'; setTimeout(startTris, 650); return; } if (r==='draw'){ miniStatus.textContent='Pareggio. Si ricomincia…'; setTimeout(startTris, 650); return; } }
+
+/* ---------- SNAKE ---------- */
+let snakeTimer=null, snakeDir={x:1,y:0}, snakeBody=[], snakeApple=null, snakeScore=0, snakeGoal=5, snakeAlive=false, snakeRetryTO=null;
+function startSnake(){
+  miniTitle.textContent = 'Snake';
+  snakeHUD.textContent = `Mele: 0 / ${snakeGoal}`;
+  miniStatus.textContent = 'Raggiungi 5 mele!  (ESC per uscire)';
+  trisWrap.style.display='none'; snakeWrap.style.display='flex'; canvasWrap.style.display='none';
+  const ctxS = snakeCanvas.getContext('2d');
+  ctxS.imageSmoothingEnabled=false;
+  snakeDir={x:1,y:0}; snakeBody=[{x:5,y:10},{x:4,y:10},{x:3,y:10}]; snakeScore=0; snakeAlive=true;
+  snakeApple = randApple();
+  drawSnake();
+  snakeTimer = setInterval(tickSnake, 120);
+}
+function stopSnake(){ if (snakeTimer){ clearInterval(snakeTimer); snakeTimer=null; } if (snakeRetryTO){ clearTimeout(snakeRetryTO); snakeRetryTO=null; } snakeAlive=false; }
+function randApple(){ const GRID=20; while(true){ const a={x:Math.floor(Math.random()*GRID), y:Math.floor(Math.random()*GRID)}; if (!snakeBody.some(s=>s.x===a.x && s.y===a.y)) return a; } }
+function tickSnake(){
+  if (!snakeAlive) return;
+  const GRID=20;
+  const head={x:snakeBody[0].x + snakeDir.x, y:snakeBody[0].y + snakeDir.y};
+  if (head.x<0||head.x>=GRID||head.y<0||head.y>=GRID || snakeBody.some(s=>s.x===head.x && s.y===head.y)){
+    miniStatus.textContent='Sei morto! Riprova…';
+    stopSnake(); snakeRetryTO = setTimeout(startSnake, 700); return;
+  }
+  snakeBody.unshift(head);
+  if (head.x===snakeApple.x && head.y===snakeApple.y){
+    snakeScore++; snakeHUD.textContent = `Mele: ${snakeScore} / ${snakeGoal}`;
+    snakeApple = randApple();
+    if (snakeScore>=snakeGoal){ miniStatus.textContent='Hai vinto!'; stopSnake(); setTimeout(()=>winMinigame(), 350); return; }
+  } else { snakeBody.pop(); }
+  drawSnake();
+}
+function drawSnake(){
+  const ctxS = snakeCanvas.getContext('2d');
+  const W=snakeCanvas.width, H=snakeCanvas.height, GRID=20, SZ=W/GRID;
+  ctxS.clearRect(0,0,W,H);
+  ctxS.fillStyle='#0b0b0b'; ctxS.fillRect(0,0,W,H);
+  ctxS.strokeStyle='#151515'; ctxS.lineWidth=1;
+  for(let i=0;i<=GRID;i++){ ctxS.beginPath(); ctxS.moveTo(i*SZ,0); ctxS.lineTo(i*SZ,H); ctxS.stroke(); ctxS.beginPath(); ctxS.moveTo(0,i*SZ); ctxS.lineTo(W,i*SZ); ctxS.stroke(); }
+  ctxS.fillStyle='#d33'; ctxS.fillRect(snakeApple.x*SZ+2, snakeApple.y*SZ+2, SZ-4, SZ-4);
+  ctxS.fillStyle='#3ad';
+  snakeBody.forEach((s)=>{ ctxS.fillRect(s.x*SZ+2, s.y*SZ+2, SZ-4, SZ-4); });
+}
+
+/* input minigiochi */
+function handleMinigameKeyDown(e){
+  if (e.code === 'Escape'){ e.preventDefault(); exitMinigameNoWin(); return; }
+  if (currentMiniId==='snake'){
+    const k=e.code; const dir=snakeDir;
+    if (k==='ArrowUp' || k==='KeyW'){ if (dir.y!==1) snakeDir={x:0,y:-1}; e.preventDefault(); }
+    else if (k==='ArrowDown' || k==='KeyS'){ if (dir.y!==-1) snakeDir={x:0,y:1}; e.preventDefault(); }
+    else if (k==='ArrowLeft' || k==='KeyA'){ if (dir.x!==1) snakeDir={x:-1,y:0}; e.preventDefault(); }
+    else if (k==='ArrowRight' || k==='KeyD'){ if (dir.x!==-1) snakeDir={x:1,y:0}; e.preventDefault(); }
+  } else if (currentMiniId==='react'){
+    if (e.code==='Space' || e.code==='Enter'){ e.preventDefault(); reactHandlePress(); }
+  }
+}
+function handleMinigameKeyUp(e){ /* no-op */ }
+
+/* ---------- WIRE LOOP ---------- */
+let wireRAF=null, wireActive=false, wireStarted=false, wirePos={x:0,y:0};
+let wirePath=null, wireR=14, wireStart=null, wireGoal=null, wireRetryTO=null;
+function startWireLoop(){
+  miniTitle.textContent='Wire Loop';
+  miniStatus.textContent='Tieni premuto il mouse dal cerchio START e percorri il filo senza uscire. (ESC per uscire)';
+  trisWrap.style.display='none'; snakeWrap.style.display='none'; canvasWrap.style.display='flex';
+  const ctxW = miniCanvas.getContext('2d'); ctxW.imageSmoothingEnabled=false;
+
+  // percorso a S semplice
+  wirePath = [{x:60,y:60},{x:360,y:60},{x:360,y:320},{x:60,y:320}];
+  wireStart = {...wirePath[0]}; wireGoal = {...wirePath[wirePath.length-1]};
+  wireActive=false; wireStarted=false;
+
+  miniCanvas.addEventListener('mousedown', wireDown);
+  miniCanvas.addEventListener('mouseup', wireUp);
+  miniCanvas.addEventListener('mouseleave', wireUp);
+  miniCanvas.addEventListener('mousemove', wireMove);
+
+  function draw(){
+    ctxW.clearRect(0,0,miniCanvas.width,miniCanvas.height);
+    // corridor
+    ctxW.lineWidth = wireR*2;
+    ctxW.lineJoin='round'; ctxW.lineCap='round';
+    ctxW.strokeStyle='#2d2d2d';
+    ctxW.beginPath(); ctxW.moveTo(wirePath[0].x, wirePath[0].y);
+    for (let i=1;i<wirePath.length;i++) ctxW.lineTo(wirePath[i].x, wirePath[i].y);
+    ctxW.stroke();
+
+    // filo al centro
+    ctxW.lineWidth = 4;
+    ctxW.strokeStyle='#66d9ef';
+    ctxW.beginPath(); ctxW.moveTo(wirePath[0].x, wirePath[0].y);
+    for (let i=1;i<wirePath.length;i++) ctxW.lineTo(wirePath[i].x, wirePath[i].y);
+    ctxW.stroke();
+
+    // start/goal
+    ctxW.fillStyle='#4caf50';
+    ctxW.beginPath(); ctxW.arc(wireStart.x, wireStart.y, 12, 0, Math.PI*2); ctxW.fill();
+    ctxW.fillStyle='#ffb300';
+    ctxW.beginPath(); ctxW.arc(wireGoal.x, wireGoal.y, 12, 0, Math.PI*2); ctxW.fill();
+
+    // cursore
+    ctxW.fillStyle = wireActive ? '#fff' : '#888';
+    ctxW.beginPath(); ctxW.arc(wirePos.x, wirePos.y, 5, 0, Math.PI*2); ctxW.fill();
+
+    wireRAF = requestAnimationFrame(draw);
+  }
+  draw();
+}
+function stopWireLoop(){
+  cancelAnimationFrame(wireRAF); wireRAF=null;
+  if (wireRetryTO){ clearTimeout(wireRetryTO); wireRetryTO=null; }
+  miniCanvas.removeEventListener('mousedown', wireDown);
+  miniCanvas.removeEventListener('mouseup', wireUp);
+  miniCanvas.removeEventListener('mouseleave', wireUp);
+  miniCanvas.removeEventListener('mousemove', wireMove);
+}
+function wireDown(ev){
+  const p = getMouse(ev, miniCanvas); wirePos=p;
+  if (dist(p, wireStart) <= 14){ wireActive=true; wireStarted=true; miniStatus.textContent='Vai! Non uscire dal corridoio…'; }
+}
+function wireUp(){ wireActive=false; }
+function wireMove(ev){
+  const p = getMouse(ev, miniCanvas); wirePos=p;
+  if (!wireActive) return;
+  // check distanza minima dal polilinea
+  const dmin = distToPolyline(p, wirePath);
+  if (dmin > wireR){ // fail
+    wireActive=false; wireStarted=false;
+    miniStatus.textContent='Hai toccato il filo! Riprova…';
+    wireRetryTO = setTimeout(startWireLoop, 700);
+    return;
+  }
+  // goal
+  if (dist(p, wireGoal) <= 16 && wireStarted){
+    miniStatus.textContent='Perfetto!';
+    winMinigame();
+  }
+}
+function dist(a,b){ return Math.hypot(a.x-b.x, a.y-b.y); }
+function getMouse(ev, can){ const r=can.getBoundingClientRect(); return {x:(ev.clientX-r.left)*(can.width/r.width), y:(ev.clientY-r.top)*(can.height/r.height)}; }
+function distToPolyline(p, pts){
+  let best=Infinity;
+  for(let i=0;i<pts.length-1;i++){
+    const a=pts[i], b=pts[i+1];
+    const dx=b.x-a.x, dy=b.y-a.y;
+    const L2=dx*dx+dy*dy;
+    let t=((p.x-a.x)*dx + (p.y-a.y)*dy)/L2; t=Math.max(0,Math.min(1,t));
+    const nx=a.x+dx*t, ny=a.y+dy*t;
+    const d=Math.hypot(p.x-nx, p.y-ny);
+    if (d<best) best=d;
+  }
+  return best;
+}
+
+/* ---------- REACTION TEST ---------- */
+let reactRound=0, reactTimes=[], reactState='idle', reactTimer=null, reactGoTime=0, reactRetryTO=null;
+const REACT_ROUNDS=3, REACT_THRESHOLD=0.35; // 350ms
+function startReaction(){
+  miniTitle.textContent='Reaction Test';
+  trisWrap.style.display='none'; snakeWrap.style.display='none'; canvasWrap.style.display='flex';
+  miniStatus.textContent='Quando lo schermo diventa VERDE, premi SPAZIO. Fai 3 buoni. (ESC per uscire)';
+  reactRound=0; reactTimes=[]; reactState='idle';
+  reactionNextRound();
+}
+function stopReaction(){ clearTimeout(reactTimer); reactTimer=null; if (reactRetryTO){ clearTimeout(reactRetryTO); reactRetryTO=null; } }
+function reactionNextRound(){
+  reactRound++;
+  if (reactRound>REACT_ROUNDS){
+    const ok = reactTimes.every(t=>t<=REACT_THRESHOLD);
+    if (ok){ miniStatus.textContent=`Bravo! ${reactTimes.map(t=>t.toFixed(3)+'s').join(', ')}`; setTimeout(()=>winMinigame(), 400); }
+    else { miniStatus.textContent=`Troppo lento (${reactTimes.map(t=>t.toFixed(3)+'s').join(', ')}). Riprova…`; reactRetryTO = setTimeout(startReaction, 900); }
+    drawReaction('done'); return;
+  }
+  // ready -> wait random -> go
+  drawReaction('ready');
+  reactState='ready';
+  clearTimeout(reactTimer);
+  reactTimer = setTimeout(()=>{
+    reactState='wait';
+    drawReaction('wait');
+    const delay = 800 + Math.random()*1400;
+    reactTimer = setTimeout(()=>{
+      reactState='go';
+      reactGoTime=performance.now();
+      drawReaction('go');
+    }, delay);
+  }, 400);
+}
+function reactHandlePress(){
+  if (reactState==='go'){
+    const t=(performance.now()-reactGoTime)/1000;
+    reactTimes.push(t);
+    canvasHUD.textContent=`Round ${reactRound}/${REACT_ROUNDS} — ${t.toFixed(3)}s (<= ${REACT_THRESHOLD}s per passare)`;
+    reactionNextRound();
+  } else if (reactState==='wait' || reactState==='ready'){
+    // troppo presto
+    miniStatus.textContent='Troppo presto! Riprova il round…';
+    drawReaction('fail');
+    clearTimeout(reactTimer);
+    reactRetryTO = setTimeout(()=>{ reactRound--; reactionNextRound(); }, 700);
+  }
+}
+function drawReaction(mode){
+  const c=miniCanvas, g=c.getContext('2d');
+  g.clearRect(0,0,c.width,c.height);
+  if (mode==='go'){ g.fillStyle='#2e7d32'; }
+  else if (mode==='fail'){ g.fillStyle='#7d2e2e'; }
+  else { g.fillStyle='#1b1b1b'; }
+  g.fillRect(0,0,c.width,c.height);
+  g.fillStyle='#fff'; g.font='bold 42px monospace'; g.textAlign='center'; g.textBaseline='middle';
+  let text='PREPARATI'; if (mode==='wait') text='…'; if (mode==='go') text='VAI!'; if (mode==='fail') text='TROPPO PRESTO';
+  g.fillText(text, c.width/2, c.height/2);
+  canvasHUD.textContent=`Round ${Math.min(reactRound,REACT_ROUNDS)}/${REACT_ROUNDS}`;
+}
+
+/* ---------- AIM TRAINER ---------- */
+let aimTargets=0, aimHits=0, aimLimit=15, aimTimer=null, aimTimeLeft=0, aimPos=null, aimRadius=18, aimRetryTO=null;
+function startAim(){
+  miniTitle.textContent='Aim Trainer';
+  miniStatus.textContent='Clicca 10 bersagli in 15s. (ESC per uscire)';
+  trisWrap.style.display='none'; snakeWrap.style.display='none'; canvasWrap.style.display='flex';
+  aimTargets=10; aimHits=0; aimTimeLeft=aimLimit;
+  spawnAim();
+  drawAim();
+  miniCanvas.addEventListener('mousedown', aimDown);
+  aimTimer = setInterval(()=>{
+    aimTimeLeft--; canvasHUD.textContent=`Bersagli: ${aimHits}/${aimTargets} — Tempo: ${aimTimeLeft}s`;
+    if (aimTimeLeft<=0){
+      miniStatus.textContent='Tempo scaduto! Riprova…';
+      stopAim(); aimRetryTO = setTimeout(startAim, 800);
+    }
+  },1000);
+  canvasHUD.textContent=`Bersagli: 0/${aimTargets} — Tempo: ${aimTimeLeft}s`;
+}
+function stopAim(){
+  if (aimTimer){ clearInterval(aimTimer); aimTimer=null; }
+  if (aimRetryTO){ clearTimeout(aimRetryTO); aimRetryTO=null; }
+  miniCanvas.removeEventListener('mousedown', aimDown);
+}
+function spawnAim(){
+  const c=miniCanvas;
+  const margin=30;
+  aimPos={ x: margin + Math.random()*(c.width-2*margin), y: margin + Math.random()*(c.height-2*margin) };
+}
+function drawAim(){
+  const c=miniCanvas, g=c.getContext('2d');
+  g.clearRect(0,0,c.width,c.height);
+  // background grid
+  g.fillStyle='#0b0b0b'; g.fillRect(0,0,c.width,c.height);
+  g.strokeStyle='#151515'; g.lineWidth=1;
+  for(let i=0;i<=20;i++){ g.beginPath(); g.moveTo(i*(c.width/20),0); g.lineTo(i*(c.width/20),c.height); g.stroke();
+                           g.beginPath(); g.moveTo(0,i*(c.height/20)); g.lineTo(c.width,i*(c.height/20)); g.stroke(); }
+  // target
+  g.fillStyle='#e53935'; g.beginPath(); g.arc(aimPos.x, aimPos.y, aimRadius, 0, Math.PI*2); g.fill();
+  g.fillStyle='#fff'; g.beginPath(); g.arc(aimPos.x, aimPos.y, 6, 0, Math.PI*2); g.fill();
+}
+function aimDown(ev){
+  const p=getMouse(ev, miniCanvas);
+  if (Math.hypot(p.x-aimPos.x, p.y-aimPos.y) <= aimRadius){
+    aimHits++;
+    if (aimHits>=aimTargets){ miniStatus.textContent='Preciso!'; stopAim(); setTimeout(()=>winMinigame(), 300); return; }
+    spawnAim(); drawAim(); canvasHUD.textContent=`Bersagli: ${aimHits}/${aimTargets} — Tempo: ${aimTimeLeft}s`;
+  }
+}
+
+/* --- utility canvas --- */
+function getMouse(ev, can){ const r=can.getBoundingClientRect(); return {x:(ev.clientX-r.left)*(can.width/r.width), y:(ev.clientY-r.top)*(can.height/r.height)}; }
+function dist(a,b){ return Math.hypot(a.x-b.x, a.y-b.y); }
+
+/* Permetti ESC anche dentro overlay minigiochi */
+window.addEventListener('keydown', (e)=>{
+  if (!inMiniGame) return;
+  if (e.code === 'Escape'){ e.preventDefault(); exitMinigameNoWin(); }
+});
+</script>
+</body>
+</html>
