@@ -4,6 +4,10 @@
 <meta charset="utf-8" />
 <title>Gioco Platform :D</title>
 <meta name="viewport" content="width=device-width,initial-scale=1" />
+<link rel="preload" as="image" href="background_level0.png">
+<link rel="preload" as="image" href="background_level1.png">
+<link rel="preload" as="image" href="background_level2.png">
+<link rel="preload" as="image" href="background_level3.png">
 <style>
   html,body {
     margin:0; height:100%; width:100%;
@@ -203,6 +207,27 @@ const DOOR_FRAMES = 6, DOOR_FPS = 8; const doorFrames = [];
 for (let i = 0; i < DOOR_FRAMES; i++) { const im = new Image(); im.src = `door_${String(i).padStart(2,'0')}.png`; doorFrames.push(im); }
 const coinImg = new Image(); coinImg.src = 'coin.png';
 
+const bgCache = new Map();
+
+async function preloadBackgrounds(){
+  const unique = [...new Set(levels.map(l => l.bg))];
+  await Promise.all(unique.map(src => new Promise((resolve) => {
+    const img = new Image();
+    img.decoding = 'async';
+    img.src = src;
+    img.onload = async () => {
+      try {
+        const bmp = await createImageBitmap(img);
+        bgCache.set(src, bmp);
+      } catch {
+        bgCache.set(src, img);
+      }
+      resolve();
+    };
+    img.onerror = () => resolve();
+  })));
+}
+
 /* === PRELOAD SPRITES === */
 const allSprites = [idleImg, ...runFrames, ...jumpFrames, ...turnFrames, ...doorFrames, coinImg];
 let spritesReady = false;
@@ -238,7 +263,9 @@ const KNOCK_VX = 320;
 const KNOCK_VY = 650;
 
 /* Spuntoni */
-const SPIKE_H = 24;
+const SPIKE_H = 16;
+const SPIKE_W_RATIO = 0.6; // 0.6 = 60% della larghezza del tile
+
 
 /* ---------- LEVELS (base + porte minigame mappate) ---------- */
 function makeEmptyMap(){const m=[];for(let r=0;r<ROWS;r++)m.push(Array(COLS).fill(0));return m;}
@@ -251,10 +278,10 @@ for(let x=4;x<=7;x++) m0[6][x]=1;
 for(let x=11;x<=13;x++) m0[5][x]=1;
 levels.push({
   bg:'background_level0.png', map:cloneMap(m0),
-  coins:[{c:5,r:5},{c:12,r:4},{c:2,r:8}],
+  coins:[{c:5,r:5},{c:12,r:4}],
   doors:[{x:(COLS-2)*TILE+6, y:9*TILE-48, w:36, h:48, target:1}],
   miniDoors:[{x: 6*TILE+10, y:9*TILE-40, w:28, h:40, game:'wire'}],
-  hazards:[{type:'spikeUp', c:9, r:9, tiles:2}, {type:'spikeUp', c:2, r:9, tiles:1}],
+  hazards:[{type:'spikeUp', c:9, r:9, tiles:2}, {type:'spikeUp', c:3, r:9, tiles:1}],
   start:{x:80,y:0}
 });
 
@@ -325,6 +352,16 @@ let airTime=0;
 let enteringDoor = { active:false, door:null };
 let shakeTime=0, shakeAmp=0;
 
+let coinCells = new Set();
+let hazardTopCells = new Set();
+function cellKey(c,r){ return `${c}|${r}`; }
+function inSpawnSafeZoneRect(x,w){
+  const sx = levels[currentLevel].start.x;
+  const safeX0 = Math.max(0, sx - 2*TILE);
+  const safeX1 = Math.min(WORLD_W, sx + 2*TILE);
+  return !((x+w) < safeX0 || x > safeX1);
+}
+
 /* --- Frame cache per animazioni --- */
 const lastFrameByAnim = { idle:null, run:null, jump:null, turn:null };
 
@@ -338,34 +375,135 @@ const CHUNK_W = 6;
 let generatedChunks = new Set();
 function rngf(seed){ let t = seed + 0x6D2B79F5; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }
 function generateChunk(ci){
-  if (generatedChunks.has(ci)) return; generatedChunks.add(ci);
+  if (generatedChunks.has(ci)) return;
+  generatedChunks.add(ci);
+
   const startC = ci * CHUNK_W;
   if (startC < 6 || startC > COLS - 8) return;
+
   const seedBase = currentLevel*10000 + ci*101;
+
+  const coinNearLocal = (x, y, eps = 6) => {
+    for (const k of coins){
+      const dx = k.x - x, dy = k.y - y;
+      if (dx*dx + dy*dy <= eps*eps) return true;
+    }
+    return false;
+  };
+
+  const tryPlaceCoin = (coin, gc, gr) => {
+    const cx = coin.x, cy = coin.y;
+    if (coinNearLocal(cx, cy)) return false;
+    coins.push(coin);
+    coinCells.add(cellKey(gc,gr));
+    return true;
+  };
+
+  // piattaforma 1
   const len1 = 2 + Math.floor(rngf(seedBase+1)*3);
   const row1 = 5 + Math.floor(rngf(seedBase+2)*3);
   const col1 = startC + 1 + Math.floor(rngf(seedBase+3)*Math.max(1, CHUNK_W - len1 - 2));
   for(let c=col1;c<col1+len1;c++){ if (map[row1] && map[row1][c]===0) map[row1][c]=1; }
+
+  // moneta su piattaforma 1
   if (rngf(seedBase+4) < 0.7){
-    const mid = col1 + Math.floor(len1/2); const id = `L${currentLevel}_G${ci}_C0`;
-    if(!collected.has(id)) coins.push({id, x: mid*TILE + (TILE-24)/2, y: (row1-1)*TILE + (TILE-24)/2, w:24, h:24 });
+    const mid = col1 + Math.floor(len1/2);
+    const id  = `L${currentLevel}_G${ci}_C0`;
+    const gc = mid, gr = row1-1;
+
+    if (!coinCells.has(cellKey(gc,gr)) && !collected.has(id)){
+      const base = { x: gc*TILE + (TILE-24)/2, y: gr*TILE + (TILE-24)/2, w:24, h:24 };
+      if (!rectHitsSolid(base.x, base.y, base.w, base.h)){
+        const coin = {id, ...base, gc, gr};
+        tryPlaceCoin(coin, gc, gr);
+      } else {
+        let ny = base.y, placed=false;
+        for (let step=0; step<6 && !placed; step++){
+          ny -= 6;
+          if (!rectHitsSolid(base.x, ny, base.w, base.h)){
+            const coin = {id, x:base.x, y:ny, w:24, h:24, gc, gr};
+            placed = tryPlaceCoin(coin, gc, gr);
+          }
+        }
+      }
+    }
   }
+
+  // spuntoni sopra piattaforma 1
+  for(let c=col1; c<col1+len1; c++){
+    const topRow = row1-1;
+    if (topRow>=0 && map[row1][c]===1 && (!map[topRow] || map[topRow][c]===0)){
+      const ck = cellKey(c, topRow);
+      if (!coinCells.has(ck) && rngf(seedBase+13+c*7) < 0.25){
+        const hx = c*TILE, hy = row1*TILE - SPIKE_H, hw = TILE;
+        if (!inSpawnSafeZoneRect(hx, hw) && !hazardTopCells.has(ck)){
+          hazards.push({type:'spikeUp', x:hx, y:hy, w:hw, h:SPIKE_H});
+          hazardTopCells.add(ck);
+        }
+      }
+    }
+  }
+
+  // piattaforma 2 (opzionale)
   if (rngf(seedBase+5) < 0.5){
     const len2 = 2 + Math.floor(rngf(seedBase+6)*3);
     const row2 = Math.min(8, row1 + 1 + Math.floor(rngf(seedBase+7)*2));
     const col2 = startC + 1 + Math.floor(rngf(seedBase+8)*Math.max(1, CHUNK_W - len2 - 2));
     for(let c=col2;c<col2+len2;c++){ if (map[row2] && map[row2][c]===0) map[row2][c]=1; }
+
+    // moneta su piattaforma 2
     if (rngf(seedBase+9) < 0.4){
-      const mid2 = col2 + Math.floor(len2/2); const id2 = `L${currentLevel}_G${ci}_C1`;
-      if(!collected.has(id2)) coins.push({id:id2, x: mid2*TILE + (TILE-24)/2, y: (row2-1)*TILE + (TILE-24)/2, w:24, h:24 });
+      const mid2 = col2 + Math.floor(len2/2);
+      const id2  = `L${currentLevel}_G${ci}_C1`;
+      const gc2 = mid2, gr2 = row2-1;
+
+      if (!coinCells.has(cellKey(gc2,gr2)) && !collected.has(id2)){
+        const base2 = { x: gc2*TILE + (TILE-24)/2, y: gr2*TILE + (TILE-24)/2, w:24, h:24 };
+        if (!rectHitsSolid(base2.x, base2.y, base2.w, base2.h)){
+          const coin2 = {id:id2, ...base2, gc:gc2, gr:gr2};
+          tryPlaceCoin(coin2, gc2, gr2);
+        } else {
+          let ny2 = base2.y, placed2=false;
+          for (let step=0; step<6 && !placed2; step++){
+            ny2 -= 6;
+            if (!rectHitsSolid(base2.x, ny2, base2.w, base2.h)){
+              const coin2 = {id:id2, x:base2.x, y:ny2, w:24, h:24, gc:gc2, gr:gr2};
+              placed2 = tryPlaceCoin(coin2, gc2, gr2);
+            }
+          }
+        }
+      }
+    }
+
+    // spuntoni sopra piattaforma 2
+    for(let c=col2; c<col2+len2; c++){
+      const topRow = row2-1;
+      if (topRow>=0 && map[row2][c]===1 && (!map[topRow] || map[topRow][c]===0)){
+        const ck = cellKey(c, topRow);
+        if (!coinCells.has(ck) && rngf(seedBase+23+c*11) < 0.25){
+          const hx = c*TILE, hy = row2*TILE - SPIKE_H, hw = TILE;
+          if (!inSpawnSafeZoneRect(hx, hw) && !hazardTopCells.has(ck)){
+            hazards.push({type:'spikeUp', x:hx, y:hy, w:hw, h:SPIKE_H});
+            hazardTopCells.add(ck);
+          }
+        }
+      }
     }
   }
+
+  // spuntoni al suolo del chunk
   if (rngf(seedBase+10) < 0.45){
     const tiles = 1 + Math.floor(rngf(seedBase+11)*3);
     const hc = startC + 1 + Math.floor(rngf(seedBase+12)*Math.max(1, CHUNK_W - tiles - 2));
     hazards.push({type:'spikeUp', x: hc*TILE, y: 9*TILE - SPIKE_H, w: tiles*TILE, h: SPIKE_H});
   }
+
+  dedupeCoins();
+
 }
+
+
+
 function ensureGeneratedForView(c0, c1){ const s = Math.floor(Math.max(0, c0)/CHUNK_W); const e = Math.floor(Math.min(COLS-4, c1)/CHUNK_W); for(let ci=s; ci<=e; ci++) generateChunk(ci); }
 
 /* ---------- PLAYER ---------- */
@@ -432,21 +570,82 @@ window.addEventListener('keyup',e=>{
 retryBtn.onclick = () => { deathOverlay.style.display='none'; paused=false; respawnLevel(); };
 
 /* ---------- HELPERS ---------- */
+
+function rectHitsSolid(x,y,w,h){
+  const left   = Math.floor(x/TILE);
+  const right  = Math.floor((x+w-1)/TILE);
+  const top    = Math.floor(y/TILE);
+  const bottom = Math.floor((y+h-1)/TILE);
+  for (let r=top; r<=bottom; r++){
+    for (let c=left; c<=right; c++){
+      if (tileAt(c,r)===1) return true;
+    }
+  }
+  return false;
+}
+
+function coinNear(x, y, eps = 10){
+  for (const k of coins){
+    const dx = k.x - x, dy = k.y - y;
+    if (dx*dx + dy*dy <= eps*eps) return true;
+  }
+  return false;
+}
+
+function dedupeCoins(){
+  const seen = new Set();
+  const out = [];
+  for (const c of coins){
+    const key = `${Math.round(c.x/12)}|${Math.round(c.y/12)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(c);
+  }
+  coins = out;
+}
+
+
+
+
 function tileAt(c,r){if(r<0||r>=ROWS||c<0||c>=COLS)return 0;return map[r][c];}
 function AABB(ax,ay,aw,ah,bx,by,bw,bh){return ax<bx+bw&&ax+aw>bx&&ay<by+bh&&ay+ah>by;}
+
 function spawnCoinsForLevel(i){
-  const lvl=levels[i],arr=[];
-  for(let k=0;k<lvl.coins.length;k++){
-    const c=lvl.coins[k],id=`L${i}_C${k}`;
-    if(!collected.has(id)) arr.push({id,x:c.c*TILE+(TILE-24)/2,y:c.r*TILE+(TILE-24)/2,w:24,h:24});
+  const lvl=levels[i], arr=[];
+  for (let k=0; k<lvl.coins.length; k++){
+    const c=lvl.coins[k], id=`L${i}_C${k}`;
+    if (collected.has(id)) continue;
+    const gc = c.c, gr = c.r;
+    if (coinCells.has(cellKey(gc,gr))) continue;
+
+    const coin = { id, x:gc*TILE+(TILE-24)/2, y:gr*TILE+(TILE-24)/2, w:24, h:24, gc, gr };
+
+    const tryPush = (cx, cy) => {
+      if (coinNear(cx, cy)) return false;
+      coin.x = cx; coin.y = cy;
+      arr.push(coin);
+      coinCells.add(cellKey(gc,gr));
+      return true;
+    };
+
+    if (!rectHitsSolid(coin.x, coin.y, coin.w, coin.h)){
+      tryPush(coin.x, coin.y);
+    } else {
+      let ny = coin.y, ok=false;
+      for (let step=0; step<6 && !ok; step++){ ny -= 6; if (!rectHitsSolid(coin.x, ny, coin.w, coin.h)) ok = tryPush(coin.x, ny); }
+    }
   }
   return arr;
 }
+
+
+
+
 function hazardsForLevel(i){
   const out=[]; const list = levels[i].hazards || [];
   for(const h of list){
     if(h.type==='spikeUp'){
-      const x = h.c * TILE; const w = (h.tiles||1)*TILE; const y = h.r * TILE - SPIKE_H; const hh = SPIKE_H;
+      const x = h.c * TILE; const w = (h.tiles||1)*TILE*SPIKE_W_RATIO; const y = h.r * TILE - SPIKE_H; const hh = SPIKE_H;
       out.push({type:'spikeUp', x, y, w, h:hh});
     }
   }
@@ -467,7 +666,7 @@ function spawnBesideDoor(door){
 }
 
 async function startGame(){
-  await preloadPromise;
+  await Promise.all([preloadPromise, preloadBackgrounds()]);
   introVideo.pause?.();
   introVideo.style.display='none';
   startScreen.style.display='none';
@@ -488,9 +687,19 @@ introVideo.onabort = startGame;
 function loadLevel(i){
   if(startTime===null) startTime=performance.now();
   currentLevel=i; map=levels[i].map; bgImg.src=levels[i].bg;
-  coins=spawnCoinsForLevel(i);
-  doors=levels[i].doors.map(d=>({...d}));
-  hazards=hazardsForLevel(i);
+  coinCells = new Set();
+  hazardTopCells = new Set();
+  coins = spawnCoinsForLevel(i);
+  doors = levels[i].doors.map(d=>({...d}));
+  hazards = hazardsForLevel(i);
+  dedupeCoins();
+
+
+  // Safe zone: ±2 tile orizzontali intorno allo spawn
+  const sx = levels[i].start.x;
+  const safeX0 = Math.max(0, sx - 2*TILE);
+  const safeX1 = Math.min(WORLD_W, sx + 2*TILE);
+  hazards = hazards.filter(h => (h.x + h.w) < safeX0 || h.x > safeX1);
   generatedChunks = new Set();
 
   // mini-porte per livello (attive/chiuse)
@@ -688,8 +897,12 @@ function draw(){
   }
 
   // Sfondo livello
-  if (bgImg.complete) { ctx.drawImage(bgImg, 0, 0, canvas.width, canvas.height); }
+  // Sfondo livello (cached)
+  const bgKey = levels[currentLevel].bg;
+  const bgBmp = bgCache.get(bgKey);
+  if (bgBmp) { ctx.drawImage(bgBmp, 0, 0, canvas.width, canvas.height); }
   else { ctx.fillStyle = '#111'; ctx.fillRect(0, 0, canvas.width, canvas.height); }
+
 
   // WORLD-SPACE
   ctx.save();
@@ -743,17 +956,31 @@ function draw(){
   }
 
   // Spuntoni
-  for(const hz of hazards){
+  // Spuntoni (più piccoli)
+  for (const hz of hazards) {
     const baseY = canvas.height - WORLD_H + hz.y + hz.h;
     const teeth = Math.max(1, Math.floor(hz.w / TILE));
     const toothW = hz.w / teeth;
-    for(let i=0;i<teeth;i++){
-      const x0 = hz.x + i*toothW; const x1 = x0 + toothW/2; const x2 = x0 + toothW;
-      const y0 = baseY; const yTip = baseY - hz.h;
-      ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x2, y0); ctx.lineTo(x1, yTip); ctx.closePath();
-      ctx.fillStyle = '#c23'; ctx.fill();
+    const actualW = toothW * SPIKE_W_RATIO;
+    const pad = (toothW - actualW) / 2;
+
+    for (let i = 0; i < teeth; i++) {
+      const x0 = hz.x + i * toothW + pad;
+      const x1 = x0 + actualW / 2;
+      const x2 = x0 + actualW;
+      const y0 = baseY;
+      const yTip = baseY - hz.h;
+
+      ctx.beginPath();
+      ctx.moveTo(x0, y0);
+      ctx.lineTo(x2, y0);
+      ctx.lineTo(x1, yTip);
+      ctx.closePath();
+      ctx.fillStyle = '#c23';
+      ctx.fill();
     }
   }
+
 
   // Scia
   ctx.fillStyle='white';
