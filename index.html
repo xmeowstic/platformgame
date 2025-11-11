@@ -17,7 +17,7 @@
   }
 
   /* Overlay a pieno schermo sopra il canvas */
-  #startScreen, #introVideo, #outroVideo, #pauseOverlay, #deathOverlay {
+#startScreen, #introVideo, #outroVideo, #pauseOverlay, #deathOverlay, #rulesOverlay {
     position:absolute; top:0; left:0; width:100%; height:100%;
     display:flex; align-items:center; justify-content:center; flex-direction:column;
     background:#111; color:white;
@@ -104,6 +104,12 @@
   }
   .mini-close:hover{ background:#2c2c2c; border-color:#555; }
   .mini-close:active{ transform: translateY(1px); }
+
+  #fadeOverlay{
+    position: fixed; inset: 0;
+    background: #000; opacity: 0; pointer-events: none;
+    z-index: 1600; transition: opacity 300ms ease;
+  }
 </style>
 </head>
 <body>
@@ -119,6 +125,43 @@
   <source src="totoro.mp4" type="video/mp4">
 </video>
 
+<!-- Recap regole (dopo intro) -->
+<div id="rulesOverlay" style="display:none;">
+  <div class="mini-card" style="max-width: 720px;">
+    <h2 style="margin:0 0 10px;">Regole & Comandi</h2>
+
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:14px; font-size:15px; line-height:1.5;">
+      <div>
+        <h3 style="margin:8px 0 6px; font-size:16px;">Movimento</h3>
+        <ul style="margin:0; padding-left:18px;">
+          <li><b>Muoviti:</b> A/D oppure ←/→</li>
+          <li><b>Giù:</b> S oppure ↓</li>
+          <li><b>Salta / Entra porte:</b> W, ↑ oppure <b>Spazio</b></li>
+          <li><b>Pausa:</b> ESC</li>
+        </ul>
+      </div>
+      <div>
+        <h3 style="margin:8px 0 6px; font-size:16px;">Minigiochi</h3>
+        <ul style="margin:0; padding-left:18px;">
+          <li><b>Snake:</b> Frecce o WASD; prendi 5 mele.</li>
+          <li><b>Reaction Test:</b> premi <b>Spazio</b> quando lo schermo è verde (3 volte, &le;350ms).</li>
+          <li><b>Wire Loop:</b> tieni premuto dal cerchio <i>START</i> e segui il filo senza uscire.</li>
+          <li><b>Aim Trainer:</b> clicca 10 bersagli in 15s.</li>
+        </ul>
+      </div>
+    </div>
+
+    <div style="margin-top:14px; font-size:14px; opacity:0.9;">
+      Raccogli monete (alcune valgono di più). Evita gli spuntoni. Chiudi le porte dei minigiochi per proseguire!
+    </div>
+
+    <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:16px;">
+      <button id="rulesOkBtn" class="btn" style="background:#4caf50;">OK, si gioca!</button>
+    </div>
+  </div>
+</div>
+
+
 <!-- Video finale -->
 <video id="outroVideo" width="960" height="540" style="display:none;" controls>
   <source src="finale.mp4" type="video/mp4">
@@ -127,6 +170,7 @@
 <!-- Canvas di gioco -->
 <canvas id="game" width="960" height="540"></canvas>
 <div id="hud">Livello: 1 · Monete: 0 · ❤❤❤</div>
+<div id="fadeOverlay"></div>
 
 <!-- Menu finale (vittoria) -->
 <div id="endMenu">
@@ -190,10 +234,36 @@ const hud=document.getElementById('hud');
 const ctx=canvas.getContext('2d');
 ctx.imageSmoothingEnabled=false;
 
+/* Offscreen per flash sul personaggio */
+const fxCanvas = document.createElement('canvas');
+const fxCtx = fxCanvas.getContext('2d');
+fxCtx.imageSmoothingEnabled = false;
+
 /* Overlays */
 const pauseOverlay = document.getElementById('pauseOverlay');
 const deathOverlay = document.getElementById('deathOverlay');
 const retryBtn = document.getElementById('retryBtn');
+
+const rulesOverlay = document.getElementById('rulesOverlay');
+const rulesOkBtn = document.getElementById('rulesOkBtn');
+const fadeOverlay = document.getElementById('fadeOverlay');
+function fadeToBlack(cb){
+  fadeOverlay.style.opacity = '1';
+  setTimeout(()=>{ cb && cb(); }, 320);
+}
+function fadeFromBlack(){
+  setTimeout(()=>{ fadeOverlay.style.opacity = '0'; }, 60);
+}
+
+function showRules(){
+  introVideo.pause?.();
+  introVideo.style.display = 'none';
+  rulesOverlay.style.display = 'flex';
+}
+rulesOkBtn.onclick = () => {
+  rulesOverlay.style.display = 'none';
+  startGame();
+};
 
 /* --- SPRITES --- */
 const idleImg = new Image(); idleImg.src = 'player_idle.png';
@@ -249,9 +319,12 @@ achContainer.id='achievements';
 document.body.appendChild(achContainer);
 function showAchievement(title, subtitle){ const el=document.createElement('div'); el.className='achievement'; el.innerHTML=`<b>🏆 ${title}</b><span>${subtitle}</span>`; achContainer.appendChild(el); setTimeout(()=>{ el.remove(); }, 3600); }
 let achFirstCoin=false, achAllCoinsBeforeL4=false;
+let achAcrobat=false, achSpeedster=false, achNoDamage=false;
+let doubleJumpCount = 0;
+let levelDamageTaken = 0;
 
 /* ---------- CONFIG ---------- */
-const TILE=48, COLS=60, ROWS=10;   // livelli lunghi
+const TILE=48, COLS=60, ROWS=10;
 const WORLD_W=COLS*TILE, WORLD_H=ROWS*TILE;
 const MOVE_SPEED=240, GRAVITY=2000, MAX_FALL=1200, JUMP_VELOCITY=700;
 
@@ -264,15 +337,14 @@ const KNOCK_VY = 650;
 
 /* Spuntoni */
 const SPIKE_H = 16;
-const SPIKE_W_RATIO = 0.6; // 0.6 = 60% della larghezza del tile
+const SPIKE_W_RATIO = 0.6;
 
-
-/* ---------- LEVELS (base + porte minigame mappate) ---------- */
+/* ---------- LEVELS ---------- */
 function makeEmptyMap(){const m=[];for(let r=0;r<ROWS;r++)m.push(Array(COLS).fill(0));return m;}
 function cloneMap(m){return m.map(row=>row.slice());}
 const levels=[];
 
-/* LIVELLO 1 (index 0) → Wire Loop */
+/* LIVELLO 1 */
 let m0=makeEmptyMap(); m0[9]=Array(COLS).fill(1);
 for(let x=4;x<=7;x++) m0[6][x]=1;
 for(let x=11;x<=13;x++) m0[5][x]=1;
@@ -285,7 +357,7 @@ levels.push({
   start:{x:80,y:0}
 });
 
-/* LIVELLO 2 (index 1) → Snake */
+/* LIVELLO 2 */
 let m1=makeEmptyMap(); m1[9]=Array(COLS).fill(1);
 for(let x=2;x<=4;x++) m1[7][x]=1;
 for(let x=14;x<=17;x++) m1[6][x]=1;
@@ -301,7 +373,7 @@ levels.push({
   start:{x:80,y:0}
 });
 
-/* LIVELLO 3 (index 2) → Reaction Test */
+/* LIVELLO 3 */
 let m2=makeEmptyMap(); m2[9]=Array(COLS).fill(1);
 for(let x=7;x<=9;x++) m2[6][x]=1;
 for(let x=1;x<=3;x++) m2[5][x]=1;
@@ -317,7 +389,7 @@ levels.push({
   start:{x:80,y:0}
 });
 
-/* LIVELLO 4 (index 3) → Aim Trainer */
+/* LIVELLO 4 */
 let m3=makeEmptyMap(); m3[9]=Array(COLS).fill(1);
 for(let x=5;x<=7;x++) m3[6][x]=1;
 for(let x=12;x<=14;x++) m3[5][x]=1;
@@ -338,7 +410,7 @@ let currentLevel=0;
 let bgImg=new Image();
 let map=levels[currentLevel].map;
 const collected=new Set(); let score=0, coins=[], doors=[];
-let hazards=[]; // rettangoli collisionabili
+let hazards=[];
 let mgDoors=[]; let mgDoorsClosed=[];
 const clearedMini = new Set();
 
@@ -351,6 +423,7 @@ let doorAnimT=0;
 let airTime=0;
 let enteringDoor = { active:false, door:null };
 let shakeTime=0, shakeAmp=0;
+let levelStartTime = null;
 
 let coinCells = new Set();
 let hazardTopCells = new Set();
@@ -370,7 +443,7 @@ let cameraX = 0;
 function clampCamera(x){ return Math.max(0, Math.min(Math.max(0, WORLD_W - canvas.width), x)); }
 function updateCamera(){ const target = player.x + player.w/2 - canvas.width/2; cameraX = clampCamera(Math.floor(target)); }
 
-/* ---------- GENERAZIONE SEMPLICE A CHUNK ---------- */
+/* ---------- GENERAZIONE A CHUNK ---------- */
 const CHUNK_W = 6;
 let generatedChunks = new Set();
 function rngf(seed){ let t = seed + 0x6D2B79F5; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }
@@ -393,7 +466,15 @@ function generateChunk(ci){
 
   const tryPlaceCoin = (coin, gc, gr) => {
     const cx = coin.x, cy = coin.y;
-    if (coinNearLocal(cx, cy)) return false;
+
+    for (const k of coins){
+      const dx = k.x - cx, dy = k.y - cy;
+      if (dx*dx + dy*dy <= 6*6){
+        k.special = true; k.value = 5;
+        coinCells.add(cellKey(gc,gr));
+        return true;
+      }
+    }
     coins.push(coin);
     coinCells.add(cellKey(gc,gr));
     return true;
@@ -414,14 +495,14 @@ function generateChunk(ci){
     if (!coinCells.has(cellKey(gc,gr)) && !collected.has(id)){
       const base = { x: gc*TILE + (TILE-24)/2, y: gr*TILE + (TILE-24)/2, w:24, h:24 };
       if (!rectHitsSolid(base.x, base.y, base.w, base.h)){
-        const coin = {id, ...base, gc, gr};
+        const coin = {id, ...base, gc, gr, value:1, special:false};
         tryPlaceCoin(coin, gc, gr);
       } else {
         let ny = base.y, placed=false;
         for (let step=0; step<6 && !placed; step++){
           ny -= 6;
           if (!rectHitsSolid(base.x, ny, base.w, base.h)){
-            const coin = {id, x:base.x, y:ny, w:24, h:24, gc, gr};
+            const coin = { id, x: base.x, y: ny, w: 24, h: 24, gc, gr, value: 1, special: false };
             placed = tryPlaceCoin(coin, gc, gr);
           }
         }
@@ -430,14 +511,16 @@ function generateChunk(ci){
   }
 
   // spuntoni sopra piattaforma 1
-  for(let c=col1; c<col1+len1; c++){
-    const topRow = row1-1;
-    if (topRow>=0 && map[row1][c]===1 && (!map[topRow] || map[topRow][c]===0)){
+  for (let c = col1; c < col1 + len1; c++) {
+    const topRow = row1 - 1;
+    if (topRow>=0 && map[row1][c]===1 && (!map[topRow] || map[topRow][c]===0)) {
       const ck = cellKey(c, topRow);
-      if (!coinCells.has(ck) && rngf(seedBase+13+c*7) < 0.25){
-        const hx = c*TILE, hy = row1*TILE - SPIKE_H, hw = TILE;
-        if (!inSpawnSafeZoneRect(hx, hw) && !hazardTopCells.has(ck)){
-          hazards.push({type:'spikeUp', x:hx, y:hy, w:hw, h:SPIKE_H});
+      if (!coinCells.has(ck) && rngf(seedBase+13+c*7) < 0.25) {
+        const width = TILE, toothW = width, actualW = toothW * SPIKE_W_RATIO;
+        const pad = (toothW - actualW) / 2;
+        const hx0 = c * TILE + pad, hy0 = row1*TILE - SPIKE_H, hw0 = width - pad*2;
+        if (!inSpawnSafeZoneRect(hx0, hw0) && !hazardTopCells.has(ck)) {
+          hazards.push({ type:'spikeUp', x:hx0, y:hy0, w:hw0, h:SPIKE_H });
           hazardTopCells.add(ck);
         }
       }
@@ -460,14 +543,14 @@ function generateChunk(ci){
       if (!coinCells.has(cellKey(gc2,gr2)) && !collected.has(id2)){
         const base2 = { x: gc2*TILE + (TILE-24)/2, y: gr2*TILE + (TILE-24)/2, w:24, h:24 };
         if (!rectHitsSolid(base2.x, base2.y, base2.w, base2.h)){
-          const coin2 = {id:id2, ...base2, gc:gc2, gr:gr2};
+          const coin2 = { id: id2, ...base2, gc: gc2, gr: gr2, value: 1, special: false };
           tryPlaceCoin(coin2, gc2, gr2);
         } else {
           let ny2 = base2.y, placed2=false;
           for (let step=0; step<6 && !placed2; step++){
             ny2 -= 6;
             if (!rectHitsSolid(base2.x, ny2, base2.w, base2.h)){
-              const coin2 = {id:id2, x:base2.x, y:ny2, w:24, h:24, gc:gc2, gr:gr2};
+              const coin2 = { id: id2, x: base2.x, y: ny2, w: 24, h: 24, gc: gc2, gr: gr2, value: 1, special: false };
               placed2 = tryPlaceCoin(coin2, gc2, gr2);
             }
           }
@@ -481,9 +564,11 @@ function generateChunk(ci){
       if (topRow>=0 && map[row2][c]===1 && (!map[topRow] || map[topRow][c]===0)){
         const ck = cellKey(c, topRow);
         if (!coinCells.has(ck) && rngf(seedBase+23+c*11) < 0.25){
-          const hx = c*TILE, hy = row2*TILE - SPIKE_H, hw = TILE;
-          if (!inSpawnSafeZoneRect(hx, hw) && !hazardTopCells.has(ck)){
-            hazards.push({type:'spikeUp', x:hx, y:hy, w:hw, h:SPIKE_H});
+          const width2 = TILE, toothW2 = width2, actualW2 = toothW2 * SPIKE_W_RATIO;
+          const pad2 = (toothW2 - actualW2) / 2;
+          const hx2 = c*TILE + pad2, hy2 = row2*TILE - SPIKE_H, hw2 = width2 - pad2*2;
+          if (!inSpawnSafeZoneRect(hx2, hw2) && !hazardTopCells.has(ck)){
+            hazards.push({ type:'spikeUp', x:hx2, y:hy2, w:hw2, h:SPIKE_H });
             hazardTopCells.add(ck);
           }
         }
@@ -491,18 +576,23 @@ function generateChunk(ci){
     }
   }
 
-  // spuntoni al suolo del chunk
+  // spuntoni al suolo del chunk (solo dove sopra è libero)
   if (rngf(seedBase+10) < 0.45){
     const tiles = 1 + Math.floor(rngf(seedBase+11)*3);
     const hc = startC + 1 + Math.floor(rngf(seedBase+12)*Math.max(1, CHUNK_W - tiles - 2));
-    hazards.push({type:'spikeUp', x: hc*TILE, y: 9*TILE - SPIKE_H, w: tiles*TILE, h: SPIKE_H});
+    const row = 9;
+    const segs = spikeSegmentsForGround(hc, tiles, row);
+    for (const seg of segs){
+      const widthG = seg.tiles * TILE, toothWG = widthG / Math.max(1, Math.floor(widthG/TILE));
+      const actualWG = toothWG * SPIKE_W_RATIO, padG = (toothWG - actualWG) / 2;
+      const hxg = seg.c * TILE + padG, hyg = row * TILE - SPIKE_H, hwg = widthG - padG*2;
+      hazards.push({ type:'spikeUp', x: hxg, y: hyg, w: hwg, h: SPIKE_H });
+    }
   }
 
   dedupeCoins();
-
+  mergeNearbyCoins(14);
 }
-
-
 
 function ensureGeneratedForView(c0, c1){ const s = Math.floor(Math.max(0, c0)/CHUNK_W); const e = Math.floor(Math.min(COLS-4, c1)/CHUNK_W); for(let ci=s; ci<=e; ci++) generateChunk(ci); }
 
@@ -514,63 +604,66 @@ let trail=[]; let doubleJumpTrailCooldown = 0;
 
 /* ---------- INPUT ---------- */
 const keys={left:false,right:false,up:false,down:false};
-window.addEventListener('keydown',e=>{
+function handleUpOrJumpKey(){
+  if (enteringDoor && enteringDoor.active) return;
+  for(const d of doors){
+    if(AABB(player.x,player.y,player.w,player.h,d.x,d.y-2,d.w,d.h+4)){
+      enteringDoor = { active:true, door:d };
+      player.anim = 'turn'; player.frame = 0; player.frameTime = 0;
+      const doorCenter = d.x + d.w/2; const playerCenter = player.x + player.w/2;
+      player.facing = (doorCenter >= playerCenter) ? 1 : -1;
+      keys.up = true;
+      return;
+    }
+  }
+  for (const g of mgDoors){
+    if (!clearedMini.has(g.key) && AABB(player.x,player.y,player.w,player.h, g.x,g.y,g.w,g.h)){
+      startMinigame(g);
+      keys.up = true;
+      return;
+    }
+  }
+  if(player.jumpsLeft>0){
+    player.vy=-JUMP_VELOCITY; player.onGround=false; player.jumpsLeft--;
+    if(player.jumpsLeft===0){
+      for (let i = 0; i < 8; i++) {
+        const ox = (Math.random() * 12 - 6);
+        const oy = (Math.random() * 12 - 6);
+        trail.push({ x: player.x + player.w/2 + ox, y: player.y + player.h/2 + oy, s: 2, life: 16, delay: i });
+      }
+      doubleJumpCount++;
+      if (!achAcrobat && doubleJumpCount >= 10) {
+        showAchievement('Acrobata!', 'Hai eseguito 10 doppi salti');
+        achAcrobat = true;
+      }
+    }
+  }
+  keys.up = true;
+}
+
+window.addEventListener('keydown', e => {
   if (inMiniGame) { handleMinigameKeyDown(e); return; }
-  if(e.code==='KeyA') keys.left=true;
-  if(e.code==='KeyD') keys.right=true;
-  if(e.code==='KeyW'){
-    // Porte classiche (uscita/ingresso livelli)
-    if (enteringDoor && enteringDoor.active) return;
-    for(const d of doors){
-      if(AABB(player.x,player.y,player.w,player.h,d.x,d.y-2,d.w,d.h+4)){
-        enteringDoor = { active:true, door:d };
-        player.anim = 'turn'; player.frame = 0; player.frameTime = 0;
-        const doorCenter = d.x + d.w/2; const playerCenter = player.x + player.w/2;
-        player.facing = (doorCenter >= playerCenter) ? 1 : -1;
-        return;
-      }
-    }
-
-    // Porte minigioco (ENTRI SOLO SE SOPRA E PREMI W)
-    for (const g of mgDoors){
-      if (!clearedMini.has(g.key) && AABB(player.x,player.y,player.w,player.h, g.x,g.y,g.w,g.h)){
-        startMinigame(g);
-        return;
-      }
-    }
-
-    // Altrimenti: Salto / Doppio salto
-    if(player.jumpsLeft>0){
-      player.vy=-JUMP_VELOCITY; player.onGround=false; player.jumpsLeft--;
-      if(player.jumpsLeft===0){
-        doubleJumpTrailCooldown = 0;
-        for (let i = 0; i < 8; i++) {
-          const ox = (Math.random() * 12 - 6);
-          const oy = (Math.random() * 12 - 6);
-          trail.push({ x: player.x + player.w/2 + ox, y: player.y + player.h/2 + oy, s: 2, life: 16, delay: i });
-        }
-      }
-    }
-    keys.up=true;
+  if (e.code === 'KeyA' || e.code === 'ArrowLeft') { keys.left = true; e.preventDefault(); }
+  if (e.code === 'KeyD' || e.code === 'ArrowRight') { keys.right = true; e.preventDefault(); }
+  if (e.code === 'KeyS' || e.code === 'ArrowDown') { keys.down = true; e.preventDefault(); }
+  if (e.code === 'KeyW' || e.code === 'ArrowUp' || e.code === 'Space') {
+    e.preventDefault();
+    handleUpOrJumpKey();
   }
-  if(e.code==='KeyS') keys.down=true;
-  if(e.code==='Escape'){
-    if (inMiniGame) return; // pausa solo fuori dai minigiochi
-    togglePause();
-  }
+  if (e.code === 'Escape') togglePause();
 });
-window.addEventListener('keyup',e=>{
+
+window.addEventListener('keyup', e => {
   if (inMiniGame) { handleMinigameKeyUp(e); return; }
-  if(e.code==='KeyA') keys.left=false;
-  if(e.code==='KeyD') keys.right=false;
-  if(e.code==='KeyW') keys.up=false;
-  if(e.code==='KeyS') keys.down=false;
+  if (e.code === 'KeyA' || e.code === 'ArrowLeft') keys.left = false;
+  if (e.code === 'KeyD' || e.code === 'ArrowRight') keys.right = false;
+  if (e.code === 'KeyS' || e.code === 'ArrowDown') keys.down = false;
+  if (e.code === 'KeyW' || e.code === 'ArrowUp' || e.code === 'Space') keys.up = false;
 });
 
 retryBtn.onclick = () => { deathOverlay.style.display='none'; paused=false; respawnLevel(); };
 
 /* ---------- HELPERS ---------- */
-
 function rectHitsSolid(x,y,w,h){
   const left   = Math.floor(x/TILE);
   const right  = Math.floor((x+w-1)/TILE);
@@ -592,20 +685,69 @@ function coinNear(x, y, eps = 10){
   return false;
 }
 
+// Ritorna segmenti di spike validi a terra
+function spikeSegmentsForGround(cStart, tilesCount, row){
+  const segments = [];
+  let run = 0, runStart = null;
+  for (let i = 0; i < tilesCount; i++){
+    const c = cStart + i;
+    const aboveSolid = (map[row - 1] && map[row - 1][c] === 1);
+    if (!aboveSolid){
+      if (run === 0) runStart = c;
+      run++;
+    } else {
+      if (run > 0){ segments.push({ c: runStart, tiles: run }); run = 0; }
+    }
+  }
+  if (run > 0) segments.push({ c: runStart, tiles: run });
+  return segments;
+}
+
 function dedupeCoins(){
-  const seen = new Set();
-  const out = [];
+  const buckets = new Map();
   for (const c of coins){
     const key = `${Math.round(c.x/12)}|${Math.round(c.y/12)}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(c);
+    if (!buckets.has(key)) buckets.set(key, []);
+    buckets.get(key).push(c);
+  }
+  const out = [];
+  for (const list of buckets.values()){
+    if (list.length >= 2){
+      const keep = list[0];
+      keep.special = true;
+      keep.value = 5;
+      out.push(keep);
+    } else {
+      const c = list[0];
+      c.special = c.special || false;
+      c.value = c.value || 1;
+      out.push(c);
+    }
   }
   coins = out;
 }
 
-
-
+// Merge monete vicine → speciale
+function mergeNearbyCoins(radius = 14){
+  if (!coins || coins.length <= 1) return;
+  const r2 = radius * radius;
+  coins.sort((a,b) => (a.x - b.x) || (a.y - b.y));
+  const out = [];
+  for (let i = 0; i < coins.length; i++){
+    const c = coins[i];
+    let merged = false;
+    for (let j = 0; j < out.length; j++){
+      const k = out[j];
+      const dx = k.x - c.x, dy = k.y - c.y;
+      if (dx*dx + dy*dy <= r2){
+        k.special = true; k.value = 5;
+        merged = true; break;
+      }
+    }
+    if (!merged) out.push(c);
+  }
+  coins = out;
+}
 
 function tileAt(c,r){if(r<0||r>=ROWS||c<0||c>=COLS)return 0;return map[r][c];}
 function AABB(ax,ay,aw,ah,bx,by,bw,bh){return ax<bx+bw&&ax+aw>bx&&ay<by+bh&&ay+ah>by;}
@@ -618,10 +760,25 @@ function spawnCoinsForLevel(i){
     const gc = c.c, gr = c.r;
     if (coinCells.has(cellKey(gc,gr))) continue;
 
-    const coin = { id, x:gc*TILE+(TILE-24)/2, y:gr*TILE+(TILE-24)/2, w:24, h:24, gc, gr };
+    const coin = { id, x:gc*TILE+(TILE-24)/2, y:gr*TILE+(TILE-24)/2, w:24, h:24, gc, gr, value:1, special:false };
 
     const tryPush = (cx, cy) => {
-      if (coinNear(cx, cy)) return false;
+      for (const k of arr){
+        const dx = k.x - cx, dy = k.y - cy;
+        if (dx*dx + dy*dy <= 10*10){
+          k.special = true; k.value = 5;
+          coinCells.add(cellKey(gc,gr));
+          return true;
+        }
+      }
+      for (const k of coins){
+        const dx = k.x - cx, dy = k.y - cy;
+        if (dx*dx + dy*dy <= 10*10){
+          k.special = true; k.value = 5;
+          coinCells.add(cellKey(gc,gr));
+          return true;
+        }
+      }
       coin.x = cx; coin.y = cy;
       arr.push(coin);
       coinCells.add(cellKey(gc,gr));
@@ -638,15 +795,22 @@ function spawnCoinsForLevel(i){
   return arr;
 }
 
-
-
-
 function hazardsForLevel(i){
-  const out=[]; const list = levels[i].hazards || [];
-  for(const h of list){
-    if(h.type==='spikeUp'){
-      const x = h.c * TILE; const w = (h.tiles||1)*TILE*SPIKE_W_RATIO; const y = h.r * TILE - SPIKE_H; const hh = SPIKE_H;
-      out.push({type:'spikeUp', x, y, w, h:hh});
+  const out = [];
+  const list = levels[i].hazards || [];
+  for (const h of list){
+    if (h.type === 'spikeUp'){
+      const row = h.r;
+      const widthTiles = (h.tiles || 1);
+      if (row >= 1){
+        const segs = spikeSegmentsForGround(h.c, widthTiles, row);
+        for (const seg of segs){
+          const width = seg.tiles * TILE, toothW = width / Math.max(1, Math.floor(width/TILE));
+          const actualW = toothW * SPIKE_W_RATIO, pad = (toothW - actualW) / 2;
+          const x = seg.c * TILE + pad, y = row * TILE - SPIKE_H, w = width - pad*2, hh = SPIKE_H;
+          out.push({ type:'spikeUp', x, y, w, h: hh });
+        }
+      }
     }
   }
   return out;
@@ -678,31 +842,31 @@ async function startGame(){
 startButton.onclick = () => {
   startScreen.style.display='none';
   introVideo.style.display='block';
-  introVideo.play?.().catch(startGame);
+  introVideo.play?.().catch(showRules);
 };
-introVideo.onended = startGame;
-introVideo.onerror = startGame;
-introVideo.onabort = startGame;
+introVideo.onended = showRules;
+introVideo.onerror = showRules;
+introVideo.onabort = showRules;
 
 function loadLevel(i){
   if(startTime===null) startTime=performance.now();
   currentLevel=i; map=levels[i].map; bgImg.src=levels[i].bg;
+  levelStartTime = performance.now();
+  levelDamageTaken = 0;
   coinCells = new Set();
   hazardTopCells = new Set();
   coins = spawnCoinsForLevel(i);
   doors = levels[i].doors.map(d=>({...d}));
   hazards = hazardsForLevel(i);
   dedupeCoins();
+  mergeNearbyCoins(14);
 
-
-  // Safe zone: ±2 tile orizzontali intorno allo spawn
   const sx = levels[i].start.x;
   const safeX0 = Math.max(0, sx - 2*TILE);
   const safeX1 = Math.min(WORLD_W, sx + 2*TILE);
   hazards = hazards.filter(h => (h.x + h.w) < safeX0 || h.x > safeX1);
   generatedChunks = new Set();
 
-  // mini-porte per livello (attive/chiuse)
   mgDoors = (levels[i].miniDoors||[]).map((d,idx)=>({ ...d, key:`MG_L${i}_${idx}` }));
   mgDoorsClosed = [];
   (levels[i].miniDoors||[]).forEach((d,idx)=>{ const key=`MG_L${i}_${idx}`; if(clearedMini.has(key)) mgDoorsClosed.push({...d, key}); });
@@ -771,6 +935,7 @@ function checkHazardsAndDamage(){
   }
 }
 function applyDamage(dir){
+  levelDamageTaken++;
   player.hp = Math.max(0, player.hp - 1);
   player.invuln = INVULN_TIME; player.hitLock = HITLOCK_TIME;
   player.vy = -KNOCK_VY; player.vx = dir * KNOCK_VX;
@@ -807,15 +972,30 @@ function update(now){
       if (player.frame >= turnFrames.length) {
         const fromLevel = currentLevel;
         const d = enteringDoor.door; enteringDoor.active = false;
-        if (d.target === 'END') { endGame(); }
-        else {
-          const entryDoor = findDoorPointingTo(d.target, fromLevel);
-          if (entryDoor) nextSpawn = spawnBesideDoor(entryDoor); else nextSpawn = {...levels[d.target].start};
-          loadLevel(d.target);
-        }
+
+        // === ACHIEVEMENT FINE LIVELLO + FADE ===
+        const lvlTime = Math.floor((performance.now() - (levelStartTime ?? performance.now())) / 1000);
+        if (!achSpeedster && lvlTime <= 30) { showAchievement('Velocista!', 'Livello completato in meno di 30s'); achSpeedster = true; }
+        if (!achNoDamage && levelDamageTaken === 0) { showAchievement('Indistruttibile!', 'Livello superato senza subire danni'); achNoDamage = true; }
+
+        const target = d.target;
+        fadeToBlack(()=>{
+          if (target === 'END') {
+            fadeFromBlack();
+            endGame();
+          } else {
+            const entryDoor = findDoorPointingTo(target, fromLevel);
+            if (entryDoor) nextSpawn = spawnBesideDoor(entryDoor); else nextSpawn = {...levels[target].start};
+            loadLevel(target);
+            fadeFromBlack();
+          }
+        });
+        // =======================================
+
         player.anim = 'idle'; player.frame = 0; player.frameTime = 0;
       }
     }
+    updateHUD();
     draw(); if (!gameEnded) requestAnimationFrame(update); return;
   }
 
@@ -861,12 +1041,14 @@ function update(now){
   for(let i=coins.length-1;i>=0;i--){
     const c=coins[i];
     if(AABB(player.x,player.y,player.w,player.h,c.x,c.y,c.w,c.h)){
-      collected.add(c.id); coins.splice(i,1); score++; updateHUD();
-      if(!achFirstCoin && score===1){ showAchievement('Prima moneta!', 'Hai raccolto la tua prima moneta'); achFirstCoin=true; }
+      const val = c.value || 1;
+      collected.add(c.id);
+      coins.splice(i,1);
+      score += val;
+      updateHUD();
+      if(!achFirstCoin && collected.size === 1){ showAchievement('Prima moneta!', 'Hai raccolto la tua prima moneta'); achFirstCoin=true; }
     }
   }
-
-  // (Niente auto-ingresso minigiochi qui!)
 
   // Generazione dinamica
   const visStart = Math.floor(cameraX / TILE) - 4;
@@ -879,6 +1061,7 @@ function update(now){
   // Camera shake decay
   if(shakeTime>0){ shakeTime -= dt; if(shakeTime<0) shakeTime=0; }
 
+  updateHUD();
   draw();
   if(!gameEnded) requestAnimationFrame(update);
 }
@@ -896,13 +1079,19 @@ function draw(){
     ctx.translate(dx,dy);
   }
 
-  // Sfondo livello
-  // Sfondo livello (cached)
+  // Sfondo con parallax (tiled orizzontale)
   const bgKey = levels[currentLevel].bg;
   const bgBmp = bgCache.get(bgKey);
-  if (bgBmp) { ctx.drawImage(bgBmp, 0, 0, canvas.width, canvas.height); }
-  else { ctx.fillStyle = '#111'; ctx.fillRect(0, 0, canvas.width, canvas.height); }
-
+  if (bgBmp) {
+    const parallax = 0.3;
+    const w = canvas.width, h = canvas.height;
+    const offset = Math.floor((cameraX * parallax) % w);
+    ctx.drawImage(bgBmp, -offset, 0, w, h);
+    ctx.drawImage(bgBmp, w - offset, 0, w, h);
+  } else {
+    ctx.fillStyle = '#111';
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+  }
 
   // WORLD-SPACE
   ctx.save();
@@ -925,11 +1114,22 @@ function draw(){
     const yOff = Math.floor(Math.sin(coinAnimT*2 + (c.x + c.y)*0.05) * 2);
     const dx = Math.floor(c.x), dy = Math.floor(canvas.height - WORLD_H + c.y + yOff);
     const dw = Math.floor(c.w), dh = Math.floor(c.h);
-    if (coinImg.complete && coinImg.width && coinImg.height) ctx.drawImage(coinImg, dx, dy, dw, dh);
-    else { ctx.fillStyle = 'gold'; ctx.fillRect(dx, dy, dw, dh); }
+
+    if (c.special) {
+      ctx.fillStyle = '#2ecc71';
+      ctx.fillRect(dx, dy, dw, dh);
+      ctx.strokeStyle = '#0b7d3b';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(dx+1, dy+1, dw-2, dh-2);
+    } else if (coinImg.complete && coinImg.width && coinImg.height) {
+      ctx.drawImage(coinImg, dx, dy, dw, dh);
+    } else {
+      ctx.fillStyle = 'gold';
+      ctx.fillRect(dx, dy, dw, dh);
+    }
   }
 
-  // Porte classiche (animate)
+  // Porte classiche
   for (const d of doors) {
     const dx = d.x, dy = canvas.height - WORLD_H + d.y, dw = d.w, dh = d.h;
     const idx = doorFrames.length ? Math.floor(doorAnimT * DOOR_FPS) % doorFrames.length : 0;
@@ -938,7 +1138,7 @@ function draw(){
     else { ctx.fillStyle = 'purple'; ctx.fillRect(dx, dy, dw, dh); }
   }
 
-  // Porte-minigioco attive (turchese) e chiuse (grigie)
+  // Porte-minigioco
   for (const g of mgDoors) {
     ctx.fillStyle = '#19bfbf';
     ctx.fillRect(g.x, canvas.height - WORLD_H + g.y, g.w, g.h);
@@ -956,7 +1156,6 @@ function draw(){
   }
 
   // Spuntoni
-  // Spuntoni (più piccoli)
   for (const hz of hazards) {
     const baseY = canvas.height - WORLD_H + hz.y + hz.h;
     const teeth = Math.max(1, Math.floor(hz.w / TILE));
@@ -980,7 +1179,6 @@ function draw(){
       ctx.fill();
     }
   }
-
 
   // Scia
   ctx.fillStyle='white';
@@ -1012,6 +1210,23 @@ function draw(){
       if (player.facing === 1) ctx.drawImage(useImg, dx, dy, dw, dh);
       else { ctx.save(); ctx.scale(-1,1); ctx.drawImage(useImg, -(dx + dw), dy, dw, dh); ctx.restore(); }
       if (imgReady) lastFrameByAnim[player.anim] = img;
+
+      // Flash bianco SOLO sul personaggio durante invulnerabilità
+      if (player.invuln > 0) {
+        if (fxCanvas.width !== dw || fxCanvas.height !== dh) { fxCanvas.width = dw; fxCanvas.height = dh; fxCtx.imageSmoothingEnabled = false; }
+        fxCtx.clearRect(0,0,dw,dh);
+        if (player.facing === 1) {
+          fxCtx.drawImage(useImg, 0, 0, dw, dh);
+        } else {
+          fxCtx.save(); fxCtx.scale(-1,1); fxCtx.drawImage(useImg, -dw, 0, dw, dh); fxCtx.restore();
+        }
+        fxCtx.globalCompositeOperation = 'source-atop';
+        const alpha = Math.min(0.6, (player.invuln / INVULN_TIME) * 0.6);
+        fxCtx.fillStyle = `rgba(255,255,255,${alpha})`;
+        fxCtx.fillRect(0,0,dw,dh);
+        fxCtx.globalCompositeOperation = 'source-over';
+        ctx.drawImage(fxCanvas, dx, dy, dw, dh);
+      }
     } else {
       ctx.fillStyle='red';
       ctx.fillRect(Math.floor(player.x), Math.floor(canvas.height - WORLD_H + player.y), Math.floor(player.w), Math.floor(player.h));
@@ -1024,7 +1239,8 @@ function draw(){
 
 function updateHUD(){
   const hearts = '❤'.repeat(player.hp) + '·'.repeat(MAX_HP - player.hp);
-  hud.textContent = `Livello: ${currentLevel+1} · Monete: ${score} · ${hearts}`;
+  const elapsed = Math.floor((performance.now() - (startTime ?? performance.now())) / 1000);
+  hud.textContent = `Livello: ${currentLevel+1} · Monete: ${score} · ${hearts} · ⏱️ ${elapsed}s`;
 }
 
 /* ---------- FINE (vittoria) ---------- */
@@ -1036,7 +1252,18 @@ function endGame(){
     if(collected.size >= totalCoins){ showAchievement('Collezionista!', 'Hai raccolto tutte le monete!'); achAllCoinsBeforeL4 = true; }
   }
   document.getElementById("endMenu").style.display="flex";
-  document.getElementById("stats").innerHTML=`Monete raccolte: ${score}<br>Tempo impiegato: ${totalTime}s`;
+
+  // Best time (salva e mostra)
+  const prevBest = parseInt(localStorage.getItem('bestTimeSec') || '0', 10);
+  let bestLine = '';
+  if (!prevBest || totalTime < prevBest) {
+    localStorage.setItem('bestTimeSec', String(totalTime));
+    bestLine = `<br><b>Nuovo record!</b>`;
+  } else {
+    bestLine = `<br>Best time: ${prevBest}s`;
+  }
+  document.getElementById("stats").innerHTML=
+    `Monete raccolte: ${score}<br>Tempo impiegato: ${totalTime}s${bestLine}`;
 }
 
 /* ---------- PULSANTI FINE ---------- */
@@ -1066,6 +1293,29 @@ let inMiniGame = false;
 let currentMiniDoor = null;
 let currentMiniId = null;
 
+// === Utilities (uniche) ===
+function getMouse(ev, can){
+  const r = can.getBoundingClientRect();
+  return {
+    x: (ev.clientX - r.left) * (can.width / r.width),
+    y: (ev.clientY - r.top)  * (can.height / r.height)
+  };
+}
+function dist(a,b){ return Math.hypot(a.x - b.x, a.y - b.y); }
+function distToPolyline(p, pts){
+  let best = Infinity;
+  for(let i=0;i<pts.length-1;i++){
+    const a = pts[i], b = pts[i+1];
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const L2 = dx*dx + dy*dy;
+    let t = ((p.x-a.x)*dx + (p.y-a.y)*dy) / L2;
+    t = Math.max(0, Math.min(1, t));
+    const nx = a.x + dx*t, ny = a.y + dy*t;
+    best = Math.min(best, Math.hypot(p.x-nx, p.y-ny));
+  }
+  return best;
+}
+
 /* Avvio minigioco */
 function startMinigame(door){
   inMiniGame = true; paused = true;
@@ -1073,7 +1323,6 @@ function startMinigame(door){
   miniOverlay.style.display = 'flex';
   miniHint.textContent = 'Vinci per chiudere la porta • ESC per uscire';
 
-  // reset viste
   trisWrap.style.display='none';
   snakeWrap.style.display='none';
   canvasWrap.style.display='none';
@@ -1096,7 +1345,7 @@ function winMinigame(){
   inMiniGame = false; paused = false;
 }
 
-/* Uscita senza vittoria (X o ESC) */
+/* Uscita senza vittoria */
 function exitMinigameNoWin(){
   stopAllMinigames();
   miniOverlay.style.display = 'none';
@@ -1105,7 +1354,7 @@ function exitMinigameNoWin(){
 }
 miniClose.addEventListener('click', exitMinigameNoWin);
 
-/* Uscita/stop (senza vittoria -> usato per restart interni) */
+/* Stop mini */
 function stopAllMinigames(){
   stopSnake();
   stopWireLoop();
@@ -1114,7 +1363,7 @@ function stopAllMinigames(){
   trisGrid.innerHTML = '';
 }
 
-/* ---------- TRIS (tenuto come esempio) ---------- */
+/* ---------- TRIS (esempio) ---------- */
 const LINES = [[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]];
 let ttt = { board: new Array(9).fill(null), player:'X', ai:'O', lock:false };
 function startTris(){ miniTitle.textContent = 'Tris'; miniStatus.textContent = 'Fai tris (giochi con X)'; trisWrap.style.display='block'; snakeWrap.style.display='none'; canvasWrap.style.display='none'; ttt.board.fill(null); ttt.lock=false; renderTris(); }
@@ -1180,7 +1429,7 @@ function handleMinigameKeyDown(e){
     if (e.code==='Space' || e.code==='Enter'){ e.preventDefault(); reactHandlePress(); }
   }
 }
-function handleMinigameKeyUp(e){ /* no-op */ }
+function handleMinigameKeyUp(e){}
 
 /* ---------- WIRE LOOP ---------- */
 let wireRAF=null, wireActive=false, wireStarted=false, wirePos={x:0,y:0};
@@ -1191,7 +1440,6 @@ function startWireLoop(){
   trisWrap.style.display='none'; snakeWrap.style.display='none'; canvasWrap.style.display='flex';
   const ctxW = miniCanvas.getContext('2d'); ctxW.imageSmoothingEnabled=false;
 
-  // percorso a S semplice
   wirePath = [{x:60,y:60},{x:360,y:60},{x:360,y:320},{x:60,y:320}];
   wireStart = {...wirePath[0]}; wireGoal = {...wirePath[wirePath.length-1]};
   wireActive=false; wireStarted=false;
@@ -1203,7 +1451,6 @@ function startWireLoop(){
 
   function draw(){
     ctxW.clearRect(0,0,miniCanvas.width,miniCanvas.height);
-    // corridor
     ctxW.lineWidth = wireR*2;
     ctxW.lineJoin='round'; ctxW.lineCap='round';
     ctxW.strokeStyle='#2d2d2d';
@@ -1211,20 +1458,17 @@ function startWireLoop(){
     for (let i=1;i<wirePath.length;i++) ctxW.lineTo(wirePath[i].x, wirePath[i].y);
     ctxW.stroke();
 
-    // filo al centro
     ctxW.lineWidth = 4;
     ctxW.strokeStyle='#66d9ef';
     ctxW.beginPath(); ctxW.moveTo(wirePath[0].x, wirePath[0].y);
     for (let i=1;i<wirePath.length;i++) ctxW.lineTo(wirePath[i].x, wirePath[i].y);
     ctxW.stroke();
 
-    // start/goal
     ctxW.fillStyle='#4caf50';
     ctxW.beginPath(); ctxW.arc(wireStart.x, wireStart.y, 12, 0, Math.PI*2); ctxW.fill();
     ctxW.fillStyle='#ffb300';
     ctxW.beginPath(); ctxW.arc(wireGoal.x, wireGoal.y, 12, 0, Math.PI*2); ctxW.fill();
 
-    // cursore
     ctxW.fillStyle = wireActive ? '#fff' : '#888';
     ctxW.beginPath(); ctxW.arc(wirePos.x, wirePos.y, 5, 0, Math.PI*2); ctxW.fill();
 
@@ -1248,39 +1492,22 @@ function wireUp(){ wireActive=false; }
 function wireMove(ev){
   const p = getMouse(ev, miniCanvas); wirePos=p;
   if (!wireActive) return;
-  // check distanza minima dal polilinea
   const dmin = distToPolyline(p, wirePath);
-  if (dmin > wireR){ // fail
+  if (dmin > wireR){
     wireActive=false; wireStarted=false;
     miniStatus.textContent='Hai toccato il filo! Riprova…';
     wireRetryTO = setTimeout(startWireLoop, 700);
     return;
   }
-  // goal
   if (dist(p, wireGoal) <= 16 && wireStarted){
     miniStatus.textContent='Perfetto!';
     winMinigame();
   }
 }
-function dist(a,b){ return Math.hypot(a.x-b.x, a.y-b.y); }
-function getMouse(ev, can){ const r=can.getBoundingClientRect(); return {x:(ev.clientX-r.left)*(can.width/r.width), y:(ev.clientY-r.top)*(can.height/r.height)}; }
-function distToPolyline(p, pts){
-  let best=Infinity;
-  for(let i=0;i<pts.length-1;i++){
-    const a=pts[i], b=pts[i+1];
-    const dx=b.x-a.x, dy=b.y-a.y;
-    const L2=dx*dx+dy*dy;
-    let t=((p.x-a.x)*dx + (p.y-a.y)*dy)/L2; t=Math.max(0,Math.min(1,t));
-    const nx=a.x+dx*t, ny=a.y+dy*t;
-    const d=Math.hypot(p.x-nx, p.y-ny);
-    if (d<best) best=d;
-  }
-  return best;
-}
 
 /* ---------- REACTION TEST ---------- */
 let reactRound=0, reactTimes=[], reactState='idle', reactTimer=null, reactGoTime=0, reactRetryTO=null;
-const REACT_ROUNDS=3, REACT_THRESHOLD=0.35; // 350ms
+const REACT_ROUNDS=3, REACT_THRESHOLD=0.35;
 function startReaction(){
   miniTitle.textContent='Reaction Test';
   trisWrap.style.display='none'; snakeWrap.style.display='none'; canvasWrap.style.display='flex';
@@ -1297,7 +1524,6 @@ function reactionNextRound(){
     else { miniStatus.textContent=`Troppo lento (${reactTimes.map(t=>t.toFixed(3)+'s').join(', ')}). Riprova…`; reactRetryTO = setTimeout(startReaction, 900); }
     drawReaction('done'); return;
   }
-  // ready -> wait random -> go
   drawReaction('ready');
   reactState='ready';
   clearTimeout(reactTimer);
@@ -1319,7 +1545,6 @@ function reactHandlePress(){
     canvasHUD.textContent=`Round ${reactRound}/${REACT_ROUNDS} — ${t.toFixed(3)}s (<= ${REACT_THRESHOLD}s per passare)`;
     reactionNextRound();
   } else if (reactState==='wait' || reactState==='ready'){
-    // troppo presto
     miniStatus.textContent='Troppo presto! Riprova il round…';
     drawReaction('fail');
     clearTimeout(reactTimer);
@@ -1371,12 +1596,10 @@ function spawnAim(){
 function drawAim(){
   const c=miniCanvas, g=c.getContext('2d');
   g.clearRect(0,0,c.width,c.height);
-  // background grid
   g.fillStyle='#0b0b0b'; g.fillRect(0,0,c.width,c.height);
   g.strokeStyle='#151515'; g.lineWidth=1;
   for(let i=0;i<=20;i++){ g.beginPath(); g.moveTo(i*(c.width/20),0); g.lineTo(i*(c.width/20),c.height); g.stroke();
                            g.beginPath(); g.moveTo(0,i*(c.height/20)); g.lineTo(c.width,i*(c.height/20)); g.stroke(); }
-  // target
   g.fillStyle='#e53935'; g.beginPath(); g.arc(aimPos.x, aimPos.y, aimRadius, 0, Math.PI*2); g.fill();
   g.fillStyle='#fff'; g.beginPath(); g.arc(aimPos.x, aimPos.y, 6, 0, Math.PI*2); g.fill();
 }
@@ -1389,11 +1612,7 @@ function aimDown(ev){
   }
 }
 
-/* --- utility canvas --- */
-function getMouse(ev, can){ const r=can.getBoundingClientRect(); return {x:(ev.clientX-r.left)*(can.width/r.width), y:(ev.clientY-r.top)*(can.height/r.height)}; }
-function dist(a,b){ return Math.hypot(a.x-b.x, a.y-b.y); }
-
-/* Permetti ESC anche dentro overlay minigiochi */
+/* ESC dentro overlay minigiochi */
 window.addEventListener('keydown', (e)=>{
   if (!inMiniGame) return;
   if (e.code === 'Escape'){ e.preventDefault(); exitMinigameNoWin(); }
